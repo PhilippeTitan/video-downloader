@@ -1,14 +1,29 @@
-# Large third-party installers — download manually, never commit
-tools/
+# Large third-party installers — download manually, never commit (Q071)
+tools/*.exe
+tools/*.zip
+tools/*.msi
 
 # Dependencies / build output
 node_modules/
 dist/
 build/
 *.ipa
+packages/
+
+# Signing material — never commit (Q071)
+*.p12
+*.mobileprovision
+*.certSigningRequest
+
+# Agent-internal notes
+.freebuff/
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Theos
+.theos/
+obj/

@@ -1,0 +1,86 @@
+:root {
+  color-scheme: dark;
+
+  --bg: #08090d;
+  --bg-glow: rgba(109, 94, 252, 0.18);
+  --surface: #12151d;
+  --surface-2: #191d27;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --text: #e9ebf2;
+  --muted: #8a92a6;
+  --accent: #6d5efc;
+  --accent-soft: rgba(109, 94, 252, 0.16);
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --radius: 16px;
+  --radius-sm: 11px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* Tab bar metrics. --nav-total is what floating elements clear. */
+  --nav-bar: 69px;
+  --nav-inset: env(safe-area-inset-bottom, 0px);
+  --nav-bottom-gap: 0px;
+  --nav-total: calc(var(--nav-bar) + var(--nav-inset) + var(--nav-bottom-gap));
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(1200px 600px at 50% -10%, var(--bg-glow), transparent 70%),
+    radial-gradient(800px 500px at 100% 100%, rgba(34, 211, 238, 0.08), transparent 70%);
+  background-attachment: fixed;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
