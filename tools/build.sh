@@ -15,10 +15,10 @@ echo "==> [2/4] embed web bundle into ios/www"
 mkdir -p "$ROOT/ios/www"
 cp -R "$ROOT/web/dist/." "$ROOT/ios/www/"
 
-echo "==> [3/4] theos compile + package"
+echo "==> [3/4] theos compile"
 cd "$ROOT/ios"
 make clean || true
-make package FINALPACKAGE=1
+make FINALPACKAGE=1
 
 echo "==> [4/4] locate artifact"
 APP="$(find "$ROOT/ios/.theos/obj" -maxdepth 3 -name 'VideoDownloader.app' -type d | head -n 1)"

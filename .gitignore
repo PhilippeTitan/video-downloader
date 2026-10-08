@@ -27,3 +27,4 @@ Thumbs.db
 # Theos
 .theos/
 obj/
+.vite/
