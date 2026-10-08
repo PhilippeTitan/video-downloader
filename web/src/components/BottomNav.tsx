@@ -1,5 +1,5 @@
 import type { Tab } from '../types'
-import { DownloadIcon, HomeIcon, LibraryIcon } from './Icons'
+import { DownloadIcon, HomeIcon, LibraryIcon, SettingsIcon } from './Icons'
 
 interface BottomNavProps {
   tab: Tab
@@ -12,6 +12,7 @@ const TABS = [
   { id: 'home', label: 'Home', Icon: HomeIcon },
   { id: 'downloads', label: 'Downloads', Icon: DownloadIcon },
   { id: 'downloaded', label: 'Downloaded', Icon: LibraryIcon },
+  { id: 'settings', label: 'Settings', Icon: SettingsIcon },
 ] as const
 
 export function BottomNav({ tab, onChange, activeCount }: BottomNavProps) {

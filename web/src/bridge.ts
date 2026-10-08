@@ -7,18 +7,9 @@
  * media files - by posting a message INTO this view:
  *
  *   window.postMessage(
- *     { source: 'vd-native', type: 'detect', payload: { url, kind, title } },
+ *     { source: 'vd-native', type: 'detect', payload: { url, kind, title, tabId } },
  *     '*',
  *   )
- *
- * The UI reacts by opening like a search: the bar flies up, the download
- * pill fades in, and the source sheet shows what was found.
- *
- * The shell should send each distinct source at most once per page load
- * (debounce/network sniffing lives on the native side).
- *
- * Navigation flows the OTHER way (see requestNavigation below): submitting
- * the address bar asks the shell's browsing WebView to load a URL.
  */
 
 export type DetectionKind = 'hls' | 'video' | 'page'
@@ -29,33 +20,36 @@ export interface DetectionEvent {
   kind: DetectionKind
   /** Optional page/video title for display. */
   title?: string
+  /** Per-tab detection scope (Q046). */
+  tabId?: string
 }
 
 interface NativeEnvelope {
   source: 'vd-native'
-  type: 'detect'
-  payload: DetectionEvent
+  type: string
+  payload: unknown
 }
 
 function isNativeEnvelope(data: unknown): data is NativeEnvelope {
   if (typeof data !== 'object' || data === null) return false
   const envelope = data as Partial<NativeEnvelope>
-  if (envelope.source !== 'vd-native' || envelope.type !== 'detect') return false
-  const payload = envelope.payload as DetectionEvent | undefined
-  return typeof payload?.url === 'string' && payload.url.length > 0
+  return envelope.source === 'vd-native' && typeof envelope.type === 'string'
 }
 
 /** Subscribe to detection messages from the native shell. Returns unsubscribe. */
 export function onDetection(handler: (event: DetectionEvent) => void): () => void {
   const listener = (event: MessageEvent<unknown>) => {
-    if (isNativeEnvelope(event.data)) handler(event.data.payload)
+    if (isNativeEnvelope(event.data) && event.data.type === 'detect') {
+      const payload = event.data.payload as DetectionEvent | undefined
+      if (payload?.url) handler(payload)
+    }
   }
   window.addEventListener('message', listener)
   return () => window.removeEventListener('message', listener)
 }
 
 /* ------------------------------------------------------------------ *
- * Navigation: UI -> shell
+ * UI -> Shell Bridge Messages
  * ------------------------------------------------------------------ */
 
 interface VkHandler {
@@ -78,15 +72,45 @@ export function hasNativeShell(): boolean {
   return shellHandler() !== null
 }
 
-/**
- * Ask the shell's browsing WebView to load a URL. The shell receives:
- *   { source: 'vd-ui', type: 'navigate', payload: { url } }
- * Returns false when there is no shell (dev browser) so the caller can
- * fall back to opening the page in a regular tab.
- */
-export function requestNavigation(url: string): boolean {
+/** Send an action message to the native shell. */
+export function sendNativeAction(type: string, payload?: unknown): boolean {
   const handler = shellHandler()
   if (!handler) return false
-  handler.postMessage({ source: 'vd-ui', type: 'navigate', payload: { url } })
+  handler.postMessage({ source: 'vd-ui', type, payload })
   return true
+}
+
+/** Ask the shell's browsing WebView to load a URL. */
+export function requestNavigation(url: string): boolean {
+  return sendNativeAction('navigate', { url })
+}
+
+/** Ask the shell to switch the active browsing tab (Q010, Q046). */
+export function requestSwitchTab(tabId: string): boolean {
+  return sendNativeAction('switchTab', { tabId })
+}
+
+/** Ask the shell to close a tab (Q016). */
+export function requestCloseTab(tabId: string): boolean {
+  return sendNativeAction('closeTab', { tabId })
+}
+
+/** Ask the shell to open a new empty tab. */
+export function requestNewTab(): boolean {
+  return sendNativeAction('newTab')
+}
+
+/** Trigger iOS system share sheet for a completed file (Q042). */
+export function requestShareFile(filePath: string, title?: string): boolean {
+  return sendNativeAction('shareFile', { filePath, title })
+}
+
+/** Clear web browsing cookies, storage, and cache in the native shell (Q055). */
+export function requestClearBrowsingData(): boolean {
+  return sendNativeAction('clearBrowsingData')
+}
+
+/** Trigger export of all completed files via system share sheet (Q070). */
+export function requestExportAll(): boolean {
+  return sendNativeAction('exportAll')
 }

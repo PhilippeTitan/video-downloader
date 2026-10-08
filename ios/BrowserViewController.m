@@ -4,11 +4,13 @@ static NSString *const kVDHandler = @"vd";
 static const NSInteger kMaxTabs = 10;          // Q016
 static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
 
-@interface BrowserViewController () <WKNavigationDelegate, WKScriptMessageHandler>
+@interface BrowserViewController () <WKNavigationDelegate, WKScriptMessageHandler, NSURLSessionDownloadDelegate>
 @property (nonatomic, strong) NSMutableArray<WKWebView *> *tabs;
 @property (nonatomic, assign) NSInteger activeTabIndex;
 @property (nonatomic, strong) ChromeWebView *chrome;
-@property (nonatomic, strong) WKWebView *browsingContainerHost; // unused placeholder for layout clarity
+@property (nonatomic, strong) NSURLSession *downloadSession;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *taskJobMap;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSURLSessionDownloadTask *> *jobTaskMap;
 @end
 
 @implementation BrowserViewController
@@ -18,6 +20,13 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     self.view.backgroundColor = UIColor.blackColor;
     self.tabs = [NSMutableArray array];
     self.activeTabIndex = 0;
+    self.taskJobMap = [NSMutableDictionary dictionary];
+    self.jobTaskMap = [NSMutableDictionary dictionary];
+
+    // Background session configuration for continuous downloads (Q020)
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:@"com.maurinex.videodownloader.bg"];
+    config.allowsCellularAccess = YES;
+    self.downloadSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:[NSOperationQueue mainQueue]];
 
     [self setupBrowsingTab];
     [self setupChrome];
@@ -92,6 +101,9 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
 #pragma mark - Tabs (Q016, Q046)
 
 - (WKWebView *)activeTab {
+    if (self.activeTabIndex < 0 || self.activeTabIndex >= (NSInteger)self.tabs.count) {
+        return self.tabs.firstObject;
+    }
     return self.tabs[self.activeTabIndex];
 }
 
@@ -118,15 +130,38 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     }
 }
 
+- (void)closeTabAtIndex:(NSInteger)index {
+    if (self.tabs.count <= 1 || index < 0 || index >= (NSInteger)self.tabs.count) return;
+    BOOL wasActive = (index == self.activeTabIndex);
+    WKWebView *target = self.tabs[index];
+    [target stopLoading];
+    [target.configuration.userContentController removeScriptMessageHandlerForName:kVDHandler];
+    [target removeFromSuperview];
+    [self.tabs removeObjectAtIndex:index];
+
+    if (index < self.activeTabIndex) {
+        self.activeTabIndex -= 1;
+    }
+    if (self.activeTabIndex >= (NSInteger)self.tabs.count) {
+        self.activeTabIndex = self.tabs.count - 1;
+    }
+    if (wasActive) {
+        WKWebView *next = self.tabs[self.activeTabIndex];
+        next.frame = self.view.bounds;
+        [self.view insertSubview:next belowSubview:self.chrome];
+    }
+}
+
 #pragma mark - Native -> chrome (bridge.ts envelope)
 
 - (void)sendToChrome:(NSDictionary *)envelope {
     NSData *data = [NSJSONSerialization dataWithJSONObject:envelope options:0 error:NULL];
     if (!data) return;
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    NSString *js = [NSString stringWithFormat:
-        @"window.postMessage(%@, '*');", json];
-    [self.chrome evaluateJavaScript:js completionHandler:nil];
+    NSString *js = [NSString stringWithFormat:@"window.postMessage(%@, '*');", json];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.chrome evaluateJavaScript:js completionHandler:nil];
+    });
 }
 
 - (void)forwardDetection:(NSDictionary *)body fromWebView:(WKWebView *)web {
@@ -140,6 +175,140 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     }];
 }
 
+#pragma mark - Storage & Downloads (Q013, Q020, Q031, Q042, Q070)
+
+- (NSString *)privateDownloadDirectory {
+    // Q031-B: Private container (Library/), not Files-app Documents
+    NSString *libDir = NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *downloads = [libDir stringByAppendingPathComponent:@"Downloads"];
+    if (![NSFileManager.defaultManager fileExistsAtPath:downloads]) {
+        [NSFileManager.defaultManager createDirectoryAtPath:downloads withIntermediateDirectories:YES attributes:nil error:NULL];
+    }
+    return downloads;
+}
+
+- (void)startNativeDownloadWithID:(NSString *)jobId urlString:(NSString *)urlString title:(NSString *)title ext:(NSString *)ext {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url || !jobId) return;
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    // Forward Safari UA and Referer per Q059
+    [req setValue:@"Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
+    if ([self activeTab].URL.absoluteString) {
+        [req setValue:[self activeTab].URL.absoluteString forHTTPHeaderField:@"Referer"];
+    }
+
+    NSURLSessionDownloadTask *task = [self.downloadSession downloadTaskWithRequest:req];
+    self.taskJobMap[@(task.taskIdentifier)] = jobId;
+    self.jobTaskMap[jobId] = task;
+    [task resume];
+}
+
+- (void)cancelNativeDownloadWithID:(NSString *)jobId {
+    NSURLSessionDownloadTask *task = self.jobTaskMap[jobId];
+    if (task) {
+        [task cancel];
+        [self.jobTaskMap removeObjectForKey:jobId];
+    }
+}
+
+#pragma mark - NSURLSessionDownloadDelegate (Q013, Q019, Q020)
+
+- (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask
+                                           didWriteData:(int64_t)bytesWritten
+                                      totalBytesWritten:(int64_t)totalBytesWritten
+                              totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
+    NSString *jobId = self.taskJobMap[@(downloadTask.taskIdentifier)];
+    if (!jobId) return;
+
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"download-progress",
+        @"payload": @{
+            @"id": jobId,
+            @"receivedBytes": @(totalBytesWritten),
+            @"totalBytes": @(totalBytesExpectedToWrite),
+            @"status": @"downloading",
+        }
+    }];
+}
+
+- (void)URLSession:(NSURLSession *)session downloadTask:(NSURLSessionDownloadTask *)downloadTask
+                              didFinishDownloadingToURL:(NSURL *)location {
+    NSString *jobId = self.taskJobMap[@(downloadTask.taskIdentifier)];
+    if (!jobId) return;
+
+    NSString *destDir = [self privateDownloadDirectory];
+    NSString *filename = [NSString stringWithFormat:@"%@.mp4", jobId];
+    NSString *destPath = [destDir stringByAppendingPathComponent:filename];
+
+    [NSFileManager.defaultManager moveItemAtURL:location toURL:[NSURL fileURLWithPath:destPath] error:NULL];
+
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"download-progress",
+        @"payload": @{
+            @"id": jobId,
+            @"status": @"complete",
+            @"filePath": destPath,
+        }
+    }];
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    NSString *jobId = self.taskJobMap[@(task.taskIdentifier)];
+    if (jobId && error) {
+        [self sendToChrome:@{
+            @"source": @"vd-native",
+            @"type": @"download-progress",
+            @"payload": @{
+                @"id": jobId,
+                @"status": @"error",
+                @"error": error.localizedDescription ?: @"Download failed",
+            }
+        }];
+    }
+}
+
+#pragma mark - Share & Export (Q042, Q070)
+
+- (void)shareFileAtPath:(NSString *)path {
+    if (!path.length || ![NSFileManager.defaultManager fileExistsAtPath:path]) return;
+    NSURL *fileURL = [NSURL fileURLWithPath:path];
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:@[fileURL] applicationActivities:nil];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        activity.popoverPresentationController.sourceView = self.view;
+        activity.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
+    }
+    [self presentViewController:activity animated:YES completion:nil];
+}
+
+- (void)exportAllFiles {
+    NSString *dir = [self privateDownloadDirectory];
+    NSArray *files = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:NULL];
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSString *file in files) {
+        [items addObject:[NSURL fileURLWithPath:[dir stringByAppendingPathComponent:file]]];
+    }
+    if (items.count == 0) return;
+    UIActivityViewController *activity = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+        activity.popoverPresentationController.sourceView = self.view;
+        activity.popoverPresentationController.sourceRect = CGRectMake(self.view.bounds.size.width/2, self.view.bounds.size.height/2, 1, 1);
+    }
+    [self presentViewController:activity animated:YES completion:nil];
+}
+
+#pragma mark - Clear Browsing Data (Q055)
+
+- (void)clearBrowsingData {
+    NSSet *dataTypes = [WKWebsiteDataStore allWebsiteDataTypes];
+    NSDate *dateFrom = [NSDate dateWithTimeIntervalSince1970:0];
+    [[WKWebsiteDataStore defaultDataStore] removeDataOfTypes:dataTypes modifiedSince:dateFrom completionHandler:^{
+        NSLog(@"Browsing data cleared successfully.");
+    }];
+}
+
 #pragma mark - chrome -> native
 
 - (void)userContentController:(WKUserContentController *)controller
@@ -147,9 +316,9 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     if (![message.name isEqualToString:kVDHandler]) return;
     NSDictionary *body = [message.body isKindOfClass:NSDictionary.class] ? message.body : nil;
     NSString *type = [body[@"type"] isKindOfClass:NSString.class] ? body[@"type"] : nil;
+    NSDictionary *payload = [body[@"payload"] isKindOfClass:NSDictionary.class] ? body[@"payload"] : nil;
 
     if ([type isEqualToString:@"detect"]) {
-        // Browsing-webview sniffer -> chrome (active tab only, Q046).
         WKWebView *sender = message.webView;
         if (sender && sender == [self activeTab]) {
             [self forwardDetection:body fromWebView:sender];
@@ -158,9 +327,7 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     }
 
     if ([type isEqualToString:@"navigate"]) {
-        NSString *url = [body[@"payload"] isKindOfClass:NSDictionary.class]
-            ? [body[@"payload"][@"url"] isKindOfClass:NSString.class] ? body[@"payload"][@"url"] : nil
-            : nil;
+        NSString *url = payload[@"url"];
         if (url.length) {
             NSURL *parsed = [NSURL URLWithString:url];
             if (parsed) [[self activeTab] loadRequest:[NSURLRequest requestWithURL:parsed]];
@@ -172,15 +339,24 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     } else if ([type isEqualToString:@"reload"]) {
         [[self activeTab] reload];
     } else if ([type isEqualToString:@"newTab"]) {
-        NSString *url = [body[@"payload"] isKindOfClass:NSDictionary.class] && [body[@"payload"][@"url"] isKindOfClass:NSString.class]
-            ? body[@"payload"][@"url"] : nil;
+        NSString *url = payload[@"url"];
         [self addTabWithURL:url];
-    } else if ([type isEqualToString:@"selectTab"]) {
-        NSNumber *index = [body[@"payload"] isKindOfClass:NSDictionary.class] && [body[@"payload"][@"index"] isKindOfClass:NSNumber.class]
-            ? body[@"payload"][@"index"] : nil;
+    } else if ([type isEqualToString:@"closeTab"]) {
+        [self closeTabAtIndex:self.activeTabIndex];
+    } else if ([type isEqualToString:@"switchTab"]) {
+        NSNumber *index = [payload[@"index"] isKindOfClass:NSNumber.class] ? payload[@"index"] : nil;
         if (index) [self selectTabAtIndex:index.integerValue];
+    } else if ([type isEqualToString:@"startDownload"]) {
+        [self startNativeDownloadWithID:payload[@"id"] urlString:payload[@"url"] title:payload[@"title"] ext:payload[@"ext"]];
+    } else if ([type isEqualToString:@"cancelDownload"]) {
+        [self cancelNativeDownloadWithID:payload[@"id"]];
+    } else if ([type isEqualToString:@"shareFile"]) {
+        [self shareFileAtPath:payload[@"filePath"]];
+    } else if ([type isEqualToString:@"exportAll"]) {
+        [self exportAllFiles];
+    } else if ([type isEqualToString:@"clearBrowsingData"]) {
+        [self clearBrowsingData];
     }
-    // startDownload / player / settings arrive with later phases (spec §4, §7).
 }
 
 @end

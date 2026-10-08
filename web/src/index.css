@@ -32,6 +32,42 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8f9fc;
+  --bg-glow: rgba(109, 94, 252, 0.12);
+  --surface: #ffffff;
+  --surface-2: #f0f2f7;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.15);
+  --text: #0f172a;
+  --muted: #64748b;
+  --accent: #5b4cf0;
+  --accent-soft: rgba(91, 76, 240, 0.12);
+  --ok: #10b981;
+  --warn: #f59e0b;
+  --err: #ef4444;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f8f9fc;
+    --bg-glow: rgba(109, 94, 252, 0.12);
+    --surface: #ffffff;
+    --surface-2: #f0f2f7;
+    --border: rgba(0, 0, 0, 0.08);
+    --border-strong: rgba(0, 0, 0, 0.15);
+    --text: #0f172a;
+    --muted: #64748b;
+    --accent: #5b4cf0;
+    --accent-soft: rgba(91, 76, 240, 0.12);
+    --ok: #10b981;
+    --warn: #f59e0b;
+    --err: #ef4444;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

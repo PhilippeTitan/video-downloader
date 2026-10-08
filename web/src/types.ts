@@ -74,4 +74,14 @@ export interface HealthResponse {
 }
 
 /** Bottom navigation destinations. */
-export type Tab = 'home' | 'downloads' | 'downloaded'
+export type Tab = 'home' | 'downloads' | 'downloaded' | 'settings'
+
+/** Browser tab in multi-tab browsing (Q010, Q016). */
+export interface BrowserTab {
+  id: string
+  url: string
+  title?: string
+}
+
+/** 3-way theme preference (Q043). */
+export type Theme = 'system' | 'dark' | 'light'

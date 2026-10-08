@@ -1,20 +1,58 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { connect } from './api'
 import type { ApiClient, ApiMode } from './api'
-import { onDetection, hasNativeShell, requestNavigation } from './bridge'
+import {
+  onDetection,
+  hasNativeShell,
+  requestNavigation,
+  requestSwitchTab,
+  requestCloseTab,
+  requestNewTab,
+  requestShareFile,
+  requestClearBrowsingData,
+  requestExportAll,
+} from './bridge'
 import { BottomNav } from './components/BottomNav'
 import { DownloadPill } from './components/DownloadPill'
 import { DownloadQueue } from './components/DownloadQueue'
 import { AlertIcon, DownloadIcon } from './components/Icons'
 import { LibraryPanel } from './components/LibraryPanel'
+import { MediaPlayerModal } from './components/MediaPlayerModal'
 import { ModeChip } from './components/ModeChip'
 import { SearchBar } from './components/SearchBar'
+import { SettingsPanel } from './components/SettingsPanel'
+import { ShortcutTiles } from './components/ShortcutTiles'
 import { SourceSheet } from './components/SourceSheet'
+import { TabBar } from './components/TabBar'
 import { VideoPanel } from './components/VideoPanel'
 import { defaultFormatId, normalizeUrl, resolutionLabel, toNavigationTarget } from './format'
 import { useDownloads } from './hooks/useDownloads'
-import type { Tab, VideoInfo } from './types'
+import type { BrowserTab, DownloadJob, Tab, Theme, VideoInfo } from './types'
 import './App.css'
+
+const TAB_STORAGE_KEY = 'vd-tabs-v1'
+const THEME_STORAGE_KEY = 'vd-theme-v1'
+
+function loadSavedTabs(): BrowserTab[] {
+  try {
+    const raw = localStorage.getItem(TAB_STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    }
+  } catch {
+    /* fallback */
+  }
+  return [{ id: 'tab-1', url: '', title: 'Start' }]
+}
+
+function saveTabs(tabs: BrowserTab[]) {
+  try {
+    localStorage.setItem(TAB_STORAGE_KEY, JSON.stringify(tabs))
+  } catch {
+    /* quota */
+  }
+}
 
 export default function App() {
   const [api, setApi] = useState<ApiClient | null>(null)
@@ -25,41 +63,75 @@ export default function App() {
   const [selectedFormatId, setSelectedFormatId] = useState<string | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
-  // Drives the hero animation. One flip per search keeps the transition from
-  // being interrupted by intermediate renders, and dismissing reverses it.
   const [searched, setSearched] = useState(false)
   const [sheetOpen, setSheetOpen] = useState(false)
-  // Bumped to invalidate an in-flight analysis when a newer one (or a reset)
-  // starts, so racing responses can never clobber fresh state.
-  const analyzeSeq = useRef(0)
+  const [playingJob, setPlayingJob] = useState<DownloadJob | null>(null)
+  const [clipboardUrl, setClipboardUrl] = useState<string | null>(null)
 
+  // Multi-tab state (Q010, Q016, Q046, Q058)
+  const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(loadSavedTabs)
+  const [activeTabId, setActiveTabId] = useState<string>(() => loadSavedTabs()[0]?.id || 'tab-1')
+
+  // Theme state (Q037, Q043, Q093)
+  const [theme, setTheme] = useState<Theme>(() => {
+    return (localStorage.getItem(THEME_STORAGE_KEY) as Theme) || 'system'
+  })
+
+  const analyzeSeq = useRef(0)
   const downloads = useDownloads(api, mode)
 
-  // Awaits before touching state so the first render is never blocked.
+  // Apply theme to DOM
+  useEffect(() => {
+    localStorage.setItem(THEME_STORAGE_KEY, theme)
+    if (theme === 'system') {
+      document.documentElement.removeAttribute('data-theme')
+    } else {
+      document.documentElement.setAttribute('data-theme', theme)
+    }
+  }, [theme])
+
+  // Save browser tabs across restarts (Q016)
+  useEffect(() => {
+    saveTabs(browserTabs)
+  }, [browserTabs])
+
+  // Connect local engine
   const probe = useCallback(async () => {
     const client = await connect()
     setApi(client)
     setMode(client.mode)
   }, [])
 
-  const reconnect = useCallback(async () => {
-    setMode('connecting')
-    await probe()
-  }, [probe])
-
   useEffect(() => {
-    // Deferred a tick so the connection result never updates state during mount.
     const initial = setTimeout(() => void probe(), 0)
     return () => clearTimeout(initial)
   }, [probe])
 
-  // On-device the native browser pane sits BEHIND this UI: once we navigate,
-  // the page area must go transparent so live content shows through.
+  // Transparent background when browsing in native shell
   useEffect(() => {
     const browsing = searched && hasNativeShell()
     document.body.classList.toggle('is-browsing', browsing)
     return () => document.body.classList.remove('is-browsing')
   }, [searched])
+
+  // Clipboard detection on mount/foreground (Q026)
+  useEffect(() => {
+    const checkClipboard = async () => {
+      try {
+        if (!searched && !url && navigator.clipboard?.readText) {
+          const text = await navigator.clipboard.readText()
+          if (text && (text.startsWith('http://') || text.startsWith('https://'))) {
+            setClipboardUrl(text.trim())
+          }
+        }
+      } catch {
+        /* clipboard access permission denied */
+      }
+    }
+    checkClipboard()
+    window.addEventListener('focus', checkClipboard)
+    return () => window.removeEventListener('focus', checkClipboard)
+  }, [searched, url])
 
   const analyze = useCallback(
     async (target?: string) => {
@@ -96,21 +168,70 @@ export default function App() {
     setAnalyzeError(null)
   }, [])
 
-  // The native shell sniffs playable sources in the browsing WebView and posts
-  // them here (see bridge.ts). The address bar keeps the page URL; only the
-  // detected source flows into analysis.
+  // Listen for sniffed sources from shell (Q006, Q046)
   useEffect(() => {
     if (!api) return
     return onDetection((event) => {
+      // If event has tabId and doesn't match active tab, ignore (Q046)
+      if (event.tabId && event.tabId !== activeTabId) return
       void analyze(event.url)
     })
-  }, [api, analyze])
+  }, [api, analyze, activeTabId])
 
+  const submitTarget = (targetUrl: string) => {
+    const target = toNavigationTarget(targetUrl)
+    if (!target) return
+
+    analyzeSeq.current += 1
+    setAnalyzing(false)
+    setVideo(null)
+    setSelectedFormatId(null)
+    setAnalyzeError(null)
+    setSheetOpen(false)
+    setSearched(true)
+    setClipboardUrl(null)
+
+    // Update active tab URL
+    setBrowserTabs((prev) =>
+      prev.map((t) => (t.id === activeTabId ? { ...t, url: target, title: target } : t)),
+    )
+
+    if (requestNavigation(target)) return
+
+    // Dev fallback
+    window.open(target, '_blank', 'noopener,noreferrer')
+    const token = analyzeSeq.current
+    window.setTimeout(() => {
+      if (analyzeSeq.current !== token) return
+      void analyze(target)
+    }, 1400)
+  }
+
+  const submitSearch = () => {
+    submitTarget(url)
+  }
+
+  // Free-space check guard before download (Q090)
   const download = async (formatId: string) => {
     if (!video) return
+
+    // Storage warning check (< 1 GB floor)
+    if (typeof navigator !== 'undefined' && 'storage' in navigator && navigator.storage?.estimate) {
+      try {
+        const { quota, usage } = await navigator.storage.estimate()
+        if (quota && usage && quota - usage < 1024 * 1024 * 1024) {
+          const proceed = window.confirm(
+            'Storage space is running low (< 1 GB free). Download anyway?',
+          )
+          if (!proceed) return
+        }
+      } catch {
+        /* storage estimate unavailable */
+      }
+    }
+
     try {
       await downloads.start({ url: video.url, formatId })
-      // Send the user straight to the progress view.
       setSheetOpen(false)
       setTab('downloads')
     } catch (err) {
@@ -121,34 +242,45 @@ export default function App() {
 
   const handleUrlChange = (next: string) => {
     setUrl(next)
-    // Emptying the bar drops back to the idle screen, like clearing a URL bar.
     if (!next.trim() && searched) resetSearch()
   }
 
-  /** Address-bar submit: navigate the browser, don't analyze up front. */
-  const submitSearch = () => {
-    const target = toNavigationTarget(url)
-    if (!target) return
+  // Tab management actions (Q010, Q016, Q046)
+  const handleSelectTab = (id: string) => {
+    setActiveTabId(id)
+    const targetTab = browserTabs.find((t) => t.id === id)
+    if (targetTab) {
+      setUrl(targetTab.url)
+      if (targetTab.url) {
+        setSearched(true)
+        requestSwitchTab(id)
+      } else {
+        resetSearch()
+      }
+    }
+  }
 
-    // Fresh page: drop whatever the previous one left behind.
-    analyzeSeq.current += 1
-    setAnalyzing(false)
-    setVideo(null)
-    setSelectedFormatId(null)
-    setAnalyzeError(null)
-    setSheetOpen(false)
-    setSearched(true)
+  const handleCloseTab = (id: string) => {
+    if (browserTabs.length <= 1) return
+    const nextTabs = browserTabs.filter((t) => t.id !== id)
+    setBrowserTabs(nextTabs)
+    requestCloseTab(id)
 
-    if (requestNavigation(target)) return
+    if (activeTabId === id) {
+      const fallback = nextTabs[nextTabs.length - 1]
+      handleSelectTab(fallback.id)
+    }
+  }
 
-    // No shell (dev browser): open the page in a normal tab, then emulate the
-    // detection its sniffer will send on-device so the flow stays explorable.
-    window.open(target, '_blank', 'noopener,noreferrer')
-    const token = analyzeSeq.current
-    window.setTimeout(() => {
-      if (analyzeSeq.current !== token) return
-      void analyze(target)
-    }, 1400)
+  const handleNewTab = () => {
+    if (browserTabs.length >= 10) return
+    const newId = `tab-${Date.now()}`
+    const newTabObj: BrowserTab = { id: newId, url: '', title: 'New Tab' }
+    setBrowserTabs((prev) => [...prev, newTabObj])
+    setActiveTabId(newId)
+    setUrl('')
+    resetSearch()
+    requestNewTab()
   }
 
   const heroActive = searched
@@ -175,7 +307,15 @@ export default function App() {
       ? 'Couldn\u2019t read that link'
       : 'Detected source'
 
-  const chip = <ModeChip mode={mode} api={api} onReconnect={() => void reconnect()} />
+  const chip = (
+    <ModeChip
+      mode={mode}
+      api={api}
+      onReconnect={() => {
+        void probe()
+      }}
+    />
+  )
 
   return (
     <div className={`app${pillVisible ? ' app--pill' : ''}`}>
@@ -198,12 +338,51 @@ export default function App() {
               <span className="hero__wordmark">Video Downloader</span>
             </div>
 
+            {/* Multi-Tab Strip (Q010, Q016) */}
+            {searched && (
+              <TabBar
+                tabs={browserTabs}
+                activeTabId={activeTabId}
+                onSelectTab={handleSelectTab}
+                onCloseTab={handleCloseTab}
+                onNewTab={handleNewTab}
+              />
+            )}
+
             <SearchBar
               value={url}
               onChange={handleUrlChange}
               onSubmit={submitSearch}
               busy={analyzing}
             />
+
+            {/* Clipboard banner if URL found (Q026) */}
+            {!searched && clipboardUrl && (
+              <div
+                className="clipboard-banner"
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  setUrl(clipboardUrl)
+                  submitTarget(clipboardUrl)
+                }}
+              >
+                <span className="clipboard-banner__text">
+                  Copied link: <strong>{clipboardUrl}</strong>
+                </span>
+                <span className="clipboard-banner__action">Open</span>
+              </div>
+            )}
+
+            {/* Start Page Site Shortcuts (Q008, Q038) */}
+            {!searched && (
+              <ShortcutTiles
+                onSelect={(target) => {
+                  setUrl(target)
+                  submitTarget(target)
+                }}
+              />
+            )}
 
             {pillVisible && !shellMode && (
               <div className="card browser-stub">
@@ -239,11 +418,30 @@ export default function App() {
                 onCancel={(id) => void downloads.cancel(id)}
                 onRemove={(id) => void downloads.remove(id)}
               />
-            ) : (
+            ) : tab === 'downloaded' ? (
               <LibraryPanel
                 jobs={downloads.finished}
                 onRemove={(id) => void downloads.remove(id)}
                 onClear={() => void downloads.clearFinished()}
+                onPlay={(job) => setPlayingJob(job)}
+                onShare={(job) => {
+                  if (!requestShareFile(job.filePath || job.url, job.title)) {
+                    navigator.share?.({ title: job.title, url: job.filePath || job.url }).catch(() => {})
+                  }
+                }}
+              />
+            ) : (
+              <SettingsPanel
+                theme={theme}
+                onThemeChange={setTheme}
+                onClearBrowsingData={() => {
+                  requestClearBrowsingData()
+                  localStorage.removeItem(TAB_STORAGE_KEY)
+                  setBrowserTabs([{ id: 'tab-1', url: '', title: 'Start' }])
+                }}
+                onExportAll={() => {
+                  requestExportAll()
+                }}
               />
             )}
           </>
@@ -319,11 +517,13 @@ export default function App() {
         </>
       )}
 
+      {/* In-app Media Player Modal (Q041, Q053, Q054) */}
+      <MediaPlayerModal job={playingJob} onClose={() => setPlayingJob(null)} />
+
       <BottomNav
         tab={tab}
         onChange={(next) => {
           setTab(next)
-          // The sheet belongs to the browser screen; don't strand it behind.
           if (next !== 'home') setSheetOpen(false)
         }}
         activeCount={downloads.active.length}

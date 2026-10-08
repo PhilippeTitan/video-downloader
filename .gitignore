@@ -28,3 +28,6 @@ Thumbs.db
 .theos/
 obj/
 .vite/
+
+ios/www/assets/
+ios/www/favicon.svg
