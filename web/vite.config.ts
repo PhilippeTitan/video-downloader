@@ -8,6 +8,8 @@ export default defineConfig(({ mode }) => {
   const backend = env.VITE_DEV_BACKEND ?? 'http://127.0.0.1:8000'
 
   return {
+    // Relative asset paths so the bundle loads from file:// inside the iOS shell.
+    base: './',
     plugins: [react()],
     server: {
       host: '127.0.0.1',
