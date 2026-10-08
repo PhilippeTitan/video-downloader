@@ -1,0 +1,14 @@
+# Large third-party installers — download manually, never commit
+tools/
+
+# Dependencies / build output
+node_modules/
+dist/
+build/
+*.ipa
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
