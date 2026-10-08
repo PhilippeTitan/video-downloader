@@ -27,6 +27,12 @@ if [ -z "$APP" ]; then
   exit 1
 fi
 
+cp "$ROOT/ios/Info.plist" "$APP/Info.plist"
+if [ ! -f "$APP/Info.plist" ]; then
+  echo "error: Info.plist missing from app bundle" >&2
+  exit 1
+fi
+
 STAGE="$ROOT/ios/packages/ipa-stage"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/Payload"
