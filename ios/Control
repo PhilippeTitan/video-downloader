@@ -1,0 +1,9 @@
+Package: com.maurinex.videodownloader
+Name: VideoDownloader
+Depends: firmware (>= 16.0)
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Personal on-device video downloader
+Maintainer: Maurinex
+Author: Maurinex
+Section: Multimedia

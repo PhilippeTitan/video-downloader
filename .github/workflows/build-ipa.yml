@@ -1,0 +1,59 @@
+name: build-ipa
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - 'web/**'
+      - 'tools/build.sh'
+      - '.github/workflows/build-ipa.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ~/theos
+          key: theos-${{ runner.os }}-v1
+
+      - name: Install Theos
+        if: steps.cache-theos.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$HOME/theos"
+          mkdir -p "$HOME/theos/sdks"
+          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          SDK_VER="$(xcrun --sdk iphoneos --show-sdk-version)"
+          ln -sfn "$SDK_PATH" "$HOME/theos/sdks/iPhoneOS${SDK_VER}.sdk"
+          brew install ldid
+
+      - name: Ensure ldid
+        if: steps.cache-theos.outputs.cache-hit == 'true'
+        run: command -v ldid >/dev/null || brew install ldid
+
+      - name: Build and package
+        run: bash tools/build.sh
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoDownloader-ipa
+          path: ios/packages/VideoDownloader.ipa
+          if-no-files-found: error
