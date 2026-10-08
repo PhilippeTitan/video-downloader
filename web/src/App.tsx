@@ -15,7 +15,7 @@ import {
 import { BottomNav } from './components/BottomNav'
 import { DownloadPill } from './components/DownloadPill'
 import { DownloadQueue } from './components/DownloadQueue'
-import { AlertIcon, DownloadIcon } from './components/Icons'
+import { AlertIcon, DownloadIcon, SettingsIcon } from './components/Icons'
 import { LibraryPanel } from './components/LibraryPanel'
 import { MediaPlayerModal } from './components/MediaPlayerModal'
 import { ModeChip } from './components/ModeChip'
@@ -319,6 +319,18 @@ export default function App() {
 
   return (
     <div className={`app${pillVisible ? ' app--pill' : ''}`}>
+      <button
+        type="button"
+        className={`app__gear${tab === 'settings' ? ' app__gear--active' : ''}`}
+        aria-label={tab === 'settings' ? 'Close settings' : 'Open settings'}
+        onClick={() => {
+          setTab(tab === 'settings' ? 'home' : 'settings')
+          if (tab !== 'settings') setSheetOpen(false)
+        }}
+      >
+        <SettingsIcon width={19} height={19} />
+      </button>
+
       <main className="app__main">
         {downloads.error && (
           <div className="alert" role="alert">

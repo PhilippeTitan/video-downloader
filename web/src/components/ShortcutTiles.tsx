@@ -1,9 +1,12 @@
+import type { ReactNode } from 'react'
+import { InstagramBrandIcon, TikTokBrandIcon, XBrandIcon, YouTubeBrandIcon } from './Icons'
+
 interface ShortcutTile {
   id: string
   name: string
   url: string
   color: string
-  iconText: string
+  icon: ReactNode
 }
 
 const SHORTCUTS: ShortcutTile[] = [
@@ -11,29 +14,29 @@ const SHORTCUTS: ShortcutTile[] = [
     id: 'youtube',
     name: 'YouTube',
     url: 'https://m.youtube.com',
-    color: '#ff0000',
-    iconText: '▶',
+    color: '#ff0033',
+    icon: <YouTubeBrandIcon width={26} height={26} />,
   },
   {
     id: 'tiktok',
     name: 'TikTok',
     url: 'https://www.tiktok.com',
-    color: '#00f2fe',
-    iconText: '♪',
+    color: '#25f4ee',
+    icon: <TikTokBrandIcon width={26} height={26} />,
   },
   {
     id: 'instagram',
     name: 'Instagram',
     url: 'https://www.instagram.com',
-    color: '#e1306c',
-    iconText: '📷',
+    color: '#d62976',
+    icon: <InstagramBrandIcon width={26} height={26} />,
   },
   {
     id: 'x',
     name: 'X',
     url: 'https://x.com',
-    color: '#1da1f2',
-    iconText: '𝕏',
+    color: '#e7e9ea',
+    icon: <XBrandIcon width={24} height={24} />,
   },
 ]
 
@@ -54,9 +57,9 @@ export function ShortcutTiles({ onSelect }: ShortcutTilesProps) {
           >
             <span
               className="shortcut-tile__icon"
-              style={{ backgroundColor: `${s.color}22`, borderColor: `${s.color}44`, color: s.color }}
+              style={{ backgroundColor: `${s.color}1a`, borderColor: `${s.color}3a` }}
             >
-              {s.iconText}
+              {s.icon}
             </span>
             <span className="shortcut-tile__name">{s.name}</span>
           </button>

@@ -160,6 +160,69 @@ export function SettingsIcon(props: IconProps) {
   )
 }
 
+export function YouTubeBrandIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={props.width ?? 24} height={props.height ?? 24} aria-hidden="true">
+      <rect x="1.5" y="4.5" width="21" height="15" rx="4.5" fill="#FF0033" />
+      <path d="M10 8.75 16.25 12 10 15.25Z" fill="#fff" />
+    </svg>
+  )
+}
+
+export function TikTokBrandIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={props.width ?? 24} height={props.height ?? 24} aria-hidden="true">
+      <g transform="translate(-0.55 0)">
+        <path
+          d="M16.6 5.82A4.28 4.28 0 0 1 15.54 3h-3.09v12.4a2.59 2.59 0 0 1-2.59 2.5c-1.42 0-2.6-1.16-2.6-2.6 0-1.72 1.66-3.01 3.37-2.48V9.66c-3.45-.46-6.47 2.22-6.47 5.64 0 3.33 2.76 5.7 5.69 5.7 3.14 0 5.69-2.55 5.69-5.7V9.01a7.35 7.35 0 0 0 4.3 1.38V7.3s-1.88.09-3.24-1.48z"
+          fill="#25F4EE"
+        />
+      </g>
+      <g transform="translate(0.55 0)">
+        <path
+          d="M16.6 5.82A4.28 4.28 0 0 1 15.54 3h-3.09v12.4a2.59 2.59 0 0 1-2.59 2.5c-1.42 0-2.6-1.16-2.6-2.6 0-1.72 1.66-3.01 3.37-2.48V9.66c-3.45-.46-6.47 2.22-6.47 5.64 0 3.33 2.76 5.7 5.69 5.7 3.14 0 5.69-2.55 5.69-5.7V9.01a7.35 7.35 0 0 0 4.3 1.38V7.3s-1.88.09-3.24-1.48z"
+          fill="#FE2C55"
+        />
+      </g>
+      <path
+        d="M16.6 5.82A4.28 4.28 0 0 1 15.54 3h-3.09v12.4a2.59 2.59 0 0 1-2.59 2.5c-1.42 0-2.6-1.16-2.6-2.6 0-1.72 1.66-3.01 3.37-2.48V9.66c-3.45-.46-6.47 2.22-6.47 5.64 0 3.33 2.76 5.7 5.69 5.7 3.14 0 5.69-2.55 5.69-5.7V9.01a7.35 7.35 0 0 0 4.3 1.38V7.3s-1.88.09-3.24-1.48z"
+        fill="#fff"
+      />
+    </svg>
+  )
+}
+
+export function InstagramBrandIcon(props: IconProps) {
+  const id = 'ig-grad'
+  return (
+    <svg viewBox="0 0 24 24" width={props.width ?? 24} height={props.height ?? 24} aria-hidden="true">
+      <defs>
+        <linearGradient id={id} x1="2" y1="22" x2="22" y2="2" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#FEDA75" />
+          <stop offset="0.3" stopColor="#FA7E1E" />
+          <stop offset="0.6" stopColor="#D62976" />
+          <stop offset="0.85" stopColor="#962FBF" />
+          <stop offset="1" stopColor="#4F5BD5" />
+        </linearGradient>
+      </defs>
+      <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="none" stroke={`url(#${id})`} strokeWidth="2" />
+      <circle cx="12" cy="12" r="4.4" fill="none" stroke={`url(#${id})`} strokeWidth="2" />
+      <circle cx="17.6" cy="6.4" r="1.4" fill={`url(#${id})`} />
+    </svg>
+  )
+}
+
+export function XBrandIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" width={props.width ?? 24} height={props.height ?? 24} aria-hidden="true">
+      <path
+        d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+        fill="#E7E9EA"
+      />
+    </svg>
+  )
+}
+
 export function ShareIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>

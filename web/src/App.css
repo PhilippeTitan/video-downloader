@@ -1824,3 +1824,36 @@ body.is-browsing {
   background: var(--accent);
   color: #fff;
 }
+
+/* ------------------------------------------------------------- global gear */
+.app__gear {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  right: 12px;
+  z-index: 60;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  transition: color 0.2s ease, border-color 0.2s ease, transform 0.2s var(--ease);
+}
+
+.app__gear:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  transform: rotate(30deg);
+}
+
+.app__gear--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.shortcut-tile__icon svg {
+  display: block;
+}
