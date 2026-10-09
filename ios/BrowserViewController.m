@@ -52,28 +52,26 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     __weak typeof(self) weakSelf = self;
     self.downloadSession = [NSURLSession sessionWithConfiguration:config
                                                          delegate:self
-                                                    delegateQueue:[NSOperationQueue mainQueue]
-                                               completionHandler:^(NSURLSession *session) {
-        [session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                for (NSURLSessionTask *task in tasks) {
-                    NSString *jobId = task.taskDescription;
-                    if (!jobId.length) continue;
-                    weakSelf.taskJobMap[@(task.taskIdentifier)] = jobId;
-                    weakSelf.jobTaskMap[jobId] = (NSURLSessionDownloadTask *)task;
-                    if (task.state == NSURLSessionTaskStateSuspended) {
-                        [task resume];
-                    }
-                    if (!weakSelf.pausedJobs[jobId]) {
-                        [weakSelf sendToChrome:@{
-                            @"source": @"vd-native",
-                            @"type": @"download-progress",
-                            @"payload": @{ @"id": jobId, @"status": @"downloading" },
-                        }];
-                    }
+                                                    delegateQueue:[NSOperationQueue mainQueue]];
+    [self.downloadSession getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            for (NSURLSessionTask *task in tasks) {
+                NSString *jobId = task.taskDescription;
+                if (!jobId.length) continue;
+                weakSelf.taskJobMap[@(task.taskIdentifier)] = jobId;
+                weakSelf.jobTaskMap[jobId] = (NSURLSessionDownloadTask *)task;
+                if (task.state == NSURLSessionTaskStateSuspended) {
+                    [task resume];
                 }
-            });
-        }];
+                if (!weakSelf.pausedJobs[jobId]) {
+                    [weakSelf sendToChrome:@{
+                        @"source": @"vd-native",
+                        @"type": @"download-progress",
+                        @"payload": @{ @"id": jobId, @"status": @"downloading" },
+                    }];
+                }
+            }
+        });
     }];
 
     [self setupBrowsingTab];
