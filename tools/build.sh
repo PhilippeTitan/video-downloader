@@ -10,6 +10,7 @@ echo "==> [1/4] web build"
 cd "$ROOT/web"
 npm ci
 npm run build
+node "$ROOT/tools/inline.cjs"
 
 echo "==> [2/4] embed web bundle into ios/www"
 mkdir -p "$ROOT/ios/www"

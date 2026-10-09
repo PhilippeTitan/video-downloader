@@ -2,6 +2,11 @@
 tools/*.exe
 tools/*.zip
 tools/*.msi
+tools/libimobile/
+
+# Local diagnostics / downloaded artifacts
+tools/crashes/
+tools/artifacts/
 
 # Dependencies / build output
 node_modules/
