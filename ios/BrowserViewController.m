@@ -1,10 +1,33 @@
 #import "BrowserViewController.h"
 
 static NSString *const kVDHandler = @"vd";
+static NSString *const kVDScheme = @"vdapp";
 static const NSInteger kMaxTabs = 10;          // Q016
 static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
 
-@interface BrowserViewController () <WKNavigationDelegate, WKScriptMessageHandler, NSURLSessionDownloadDelegate>
+static NSString *VDMimeForExtension(NSString *ext) {
+    static NSDictionary<NSString *, NSString *> *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{
+            @"html": @"text/html",
+            @"js": @"application/javascript",
+            @"css": @"text/css",
+            @"svg": @"image/svg+xml",
+            @"json": @"application/json",
+            @"png": @"image/png",
+            @"jpg": @"image/jpeg",
+            @"jpeg": @"image/jpeg",
+            @"ico": @"image/x-icon",
+            @"map": @"application/json",
+            @"woff": @"font/woff",
+            @"woff2": @"font/woff2",
+        };
+    });
+    return map[ext.lowercaseString] ?: @"application/octet-stream";
+}
+
+@interface BrowserViewController () <WKNavigationDelegate, WKScriptMessageHandler, WKURLSchemeHandler, NSURLSessionDownloadDelegate>
 @property (nonatomic, strong) NSMutableArray<WKWebView *> *tabs;
 @property (nonatomic, assign) NSInteger activeTabIndex;
 @property (nonatomic, strong) ChromeWebView *chrome;
@@ -67,18 +90,12 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
 - (void)setupChrome {
     WKWebViewConfiguration *config = [WKWebViewConfiguration new];
     [config.userContentController addScriptMessageHandler:self name:kVDHandler];
+    // file:// blocks ES modules (CORS); serve the bundle same-origin instead.
+    [config setURLSchemeHandler:self forScheme:kVDScheme];
 
     CGRect frame = CGRectMake(0, 0, self.view.bounds.size.width, kChromeHeight);
     self.chrome = [[ChromeWebView alloc] initWithFrame:frame configuration:config];
-
-    NSString *wwwIndex = [NSBundle.mainBundle pathForResource:@"index" ofType:@"html" inDirectory:@"www"];
-    if (!wwwIndex) {
-        wwwIndex = [NSBundle.mainBundle pathForResource:@"index" ofType:@"html"];
-    }
-    if (wwwIndex) {
-        [self.chrome loadFileURL:[NSURL fileURLWithPath:wwwIndex]
-       allowingReadAccessToURL:[NSURL fileURLWithPath:wwwIndex.stringByDeletingLastPathComponent]];
-    }
+    [self.chrome loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:@"vdapp://local/index.html"]]];
 
     self.chrome.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.chrome];
@@ -210,6 +227,46 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
         [task cancel];
         [self.jobTaskMap removeObjectForKey:jobId];
     }
+}
+
+#pragma mark - WKURLSchemeHandler (bundle asset serving)
+
+- (void)webView:(WKWebView *)webView startURLSchemeTask:(id<WKURLSchemeTask>)task {
+    NSString *path = task.request.URL.path;
+    if (path.length == 0 || [path isEqualToString:@"/"]) {
+        path = @"/index.html";
+    }
+    NSString *rel = [path hasPrefix:@"/"] ? [path substringFromIndex:1] : path;
+    if ([rel containsString:@".."]) {
+        [task didFailWithError:[NSError errorWithDomain:@"vdapp" code:400
+            userInfo:@{NSLocalizedDescriptionKey: @"Bad path"}]];
+        return;
+    }
+
+    NSString *root = NSBundle.mainBundle.bundlePath;
+    NSString *candidate = [root stringByAppendingPathComponent:rel];
+    if (![NSFileManager.defaultManager fileExistsAtPath:candidate]) {
+        candidate = [[root stringByAppendingPathComponent:@"www"] stringByAppendingPathComponent:rel];
+    }
+
+    NSData *data = [NSData dataWithContentsOfFile:candidate];
+    if (!data) {
+        [task didFailWithError:[NSError errorWithDomain:@"vdapp" code:404
+            userInfo:@{NSLocalizedDescriptionKey: @"Not found"}]];
+        return;
+    }
+
+    NSString *mime = VDMimeForExtension(candidate.pathExtension);
+    NSURLResponse *response = [[NSURLResponse alloc] initWithURL:task.request.URL
+                                                        MIMEType:mime
+                                           expectedContentLength:data.length
+                                                textEncodingName:@"utf-8"];
+    [task didReceiveResponse:response];
+    [task didReceiveData:data];
+    [task didFinish];
+}
+
+- (void)webView:(WKWebView *)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {
 }
 
 #pragma mark - NSURLSessionDownloadDelegate (Q013, Q019, Q020)
