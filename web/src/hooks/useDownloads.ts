@@ -13,6 +13,10 @@ export interface DownloadsController {
   cancel: (id: string) => Promise<void>
   remove: (id: string) => Promise<void>
   clearFinished: () => Promise<void>
+  pause: (id: string) => Promise<void>
+  resume: (id: string) => Promise<void>
+  retry: (id: string) => Promise<void>
+  clearFailed: () => Promise<void>
 }
 
 /**
@@ -83,17 +87,55 @@ export function useDownloads(api: ApiClient | null, mode: ApiMode | 'connecting'
     await refresh()
   }, [api, refresh])
 
+  const pause = useCallback(
+    async (id: string) => {
+      if (!api) return
+      await api.pauseJob(id)
+      await refresh()
+    },
+    [api, refresh],
+  )
+
+  const resume = useCallback(
+    async (id: string) => {
+      if (!api) return
+      await api.resumeJob(id)
+      await refresh()
+    },
+    [api, refresh],
+  )
+
+  const retry = useCallback(
+    async (id: string) => {
+      if (!api) return
+      await api.retryJob(id)
+      await refresh()
+    },
+    [api, refresh],
+  )
+
+  const clearFailed = useCallback(async () => {
+    if (!api) return
+    const failed = jobs.filter((j) => j.status === 'error')
+    for (const job of failed) await api.removeJob(job.id)
+    await refresh()
+  }, [api, refresh, jobs])
+
   const isActive = (job: DownloadJob) =>
     job.status === 'queued' || job.status === 'downloading' || job.status === 'converting'
 
   return {
     jobs,
     active: jobs.filter(isActive),
-    finished: jobs.filter((job) => !isActive(job)),
+    finished: jobs.filter((job) => !isActive(job) && job.status !== 'paused'),
     error,
     start,
     cancel,
     remove,
     clearFinished,
+    pause,
+    resume,
+    retry,
+    clearFailed,
   }
 }

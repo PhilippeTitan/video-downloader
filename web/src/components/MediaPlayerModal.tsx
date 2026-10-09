@@ -5,9 +5,11 @@ import { CloseIcon, MusicIcon } from './Icons'
 interface MediaPlayerModalProps {
   job: DownloadJob | null
   onClose: () => void
+  /** Resume-position reporting (D020): frac = currentTime / duration. */
+  onProgress?: (jobId: string, frac: number) => void
 }
 
-export function MediaPlayerModal({ job, onClose }: MediaPlayerModalProps) {
+export function MediaPlayerModal({ job, onClose, onProgress }: MediaPlayerModalProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
@@ -37,6 +39,21 @@ export function MediaPlayerModal({ job, onClose }: MediaPlayerModalProps) {
       } catch (err) {
         console.warn('PiP error:', err)
       }
+    }
+  }
+
+  const handleTime = (e: { currentTarget: HTMLMediaElement }) => {
+    const el = e.currentTarget
+    if (job && Number.isFinite(el.duration) && el.duration > 0) {
+      onProgress?.(job.id, el.currentTime / el.duration)
+    }
+  }
+
+  const handleMeta = (e: { currentTarget: HTMLMediaElement }) => {
+    const el = e.currentTarget
+    // Resume position for items longer than ~5 min (D020).
+    if (job?.playbackProgress && el.duration > 300) {
+      el.currentTime = job.playbackProgress * el.duration
     }
   }
 
@@ -87,6 +104,8 @@ export function MediaPlayerModal({ job, onClose }: MediaPlayerModalProps) {
                 controls
                 autoPlay
                 className="audio-screen__controls"
+                onTimeUpdate={handleTime}
+                onLoadedMetadata={handleMeta}
               />
             </div>
           ) : (
@@ -98,6 +117,8 @@ export function MediaPlayerModal({ job, onClose }: MediaPlayerModalProps) {
                 autoPlay
                 playsInline
                 className="video-screen__video"
+                onTimeUpdate={handleTime}
+                onLoadedMetadata={handleMeta}
               />
             </div>
           )}

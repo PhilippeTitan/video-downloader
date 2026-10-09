@@ -85,14 +85,15 @@ export function requestNavigation(url: string): boolean {
   return sendNativeAction('navigate', { url })
 }
 
-/** Ask the shell to switch the active browsing tab (Q010, Q046). */
-export function requestSwitchTab(tabId: string): boolean {
-  return sendNativeAction('switchTab', { tabId })
+/** Ask the shell to switch the active browsing tab (Q010, Q046).
+ *  Index order mirrors the web tab list (web is the source of truth). */
+export function requestSwitchTab(index: number): boolean {
+  return sendNativeAction('switchTab', { index })
 }
 
-/** Ask the shell to close a tab (Q016). */
-export function requestCloseTab(tabId: string): boolean {
-  return sendNativeAction('closeTab', { tabId })
+/** Ask the shell to close a tab by index (Q016). */
+export function requestCloseTab(index: number): boolean {
+  return sendNativeAction('closeTab', { index })
 }
 
 /** Ask the shell to open a new empty tab. */

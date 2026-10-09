@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { connect } from './api'
 import type { ApiClient, ApiMode } from './api'
 import {
@@ -12,26 +13,33 @@ import {
   requestClearBrowsingData,
   requestExportAll,
 } from './bridge'
-import { BottomNav } from './components/BottomNav'
+import { BottomStrip } from './components/BottomStrip'
 import { DownloadPill } from './components/DownloadPill'
-import { DownloadQueue } from './components/DownloadQueue'
-import { AlertIcon, DownloadIcon, SettingsIcon } from './components/Icons'
-import { LibraryPanel } from './components/LibraryPanel'
+import { AlertIcon } from './components/Icons'
+import { HomeHero } from './components/HomeHero'
 import { MediaPlayerModal } from './components/MediaPlayerModal'
 import { ModeChip } from './components/ModeChip'
+import { NavRail } from './components/NavRail'
 import { SearchBar } from './components/SearchBar'
 import { SettingsPanel } from './components/SettingsPanel'
-import { ShortcutTiles } from './components/ShortcutTiles'
 import { SourceSheet } from './components/SourceSheet'
 import { TabBar } from './components/TabBar'
 import { VideoPanel } from './components/VideoPanel'
+import { loadFavorites } from './favorites'
+import type { Favorite } from './favorites'
 import { defaultFormatId, normalizeUrl, resolutionLabel, toNavigationTarget } from './format'
+import { clearHistory, loadHistory, syncHistory } from './history'
+import type { HistoryEntry } from './history'
 import { useDownloads } from './hooks/useDownloads'
+import { loadRecents, pushRecent } from './recents'
+import { DownloadsScreen } from './screens/DownloadsScreen'
+import { LibraryScreen } from './screens/LibraryScreen'
 import type { BrowserTab, DownloadJob, Tab, Theme, VideoInfo } from './types'
 import './App.css'
 
 const TAB_STORAGE_KEY = 'vd-tabs-v1'
 const THEME_STORAGE_KEY = 'vd-theme-v1'
+const PRIVATE_STORAGE_KEY = 'vd-private-v1'
 
 function loadSavedTabs(): BrowserTab[] {
   try {
@@ -77,6 +85,23 @@ export default function App() {
     return (localStorage.getItem(THEME_STORAGE_KEY) as Theme) || 'system'
   })
 
+  // Downloads & Library design state (D009, D010, D017, D046, D047)
+  const [history, setHistory] = useState<HistoryEntry[]>(loadHistory)
+  const [toast, setToast] = useState<{ text: string; sub?: string; toLibrary?: boolean } | null>(null)
+  const [pulseJobId, setPulseJobId] = useState<string | null>(null)
+  const [freeBytes, setFreeBytes] = useState<number | null>(null)
+  const [fly, setFly] = useState<{ id: number; x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const prevCompleteIds = useRef<Set<string>>(new Set())
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Home chrome state (Stage D): favorites, recents, private mode (D025)
+  const [favorites, setFavorites] = useState<Favorite[]>(loadFavorites)
+  const [recents, setRecents] = useState<string[]>(loadRecents)
+  const [privateMode, setPrivateMode] = useState(
+    () => localStorage.getItem(PRIVATE_STORAGE_KEY) === '1',
+  )
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+
   const analyzeSeq = useRef(0)
   const downloads = useDownloads(api, mode)
 
@@ -94,6 +119,57 @@ export default function App() {
   useEffect(() => {
     saveTabs(browserTabs)
   }, [browserTabs])
+
+  const showToast = useCallback((next: { text: string; sub?: string; toLibrary?: boolean }) => {
+    setToast(next)
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    toastTimer.current = setTimeout(() => setToast(null), 3200)
+  }, [])
+
+  // Persist private mode across launches (D025, D049)
+  useEffect(() => {
+    localStorage.setItem(PRIVATE_STORAGE_KEY, privateMode ? '1' : '0')
+  }, [privateMode])
+
+  // History log + completion toasts (D009, D010, D048 rehydration).
+  // Private downloads stay out of the history log (D025).
+  useEffect(() => {
+    if (downloads.jobs.length === 0) return
+    setHistory(syncHistory(downloads.jobs.filter((j) => !j.isPrivate)))
+
+    const completed = downloads.jobs.filter((j) => j.status === 'complete')
+    const fresh = completed.filter((j) => !prevCompleteIds.current.has(j.id))
+    // Seed the seen-set on first load so rehydrated jobs don't spam toasts.
+    if (prevCompleteIds.current.size === 0 && fresh.length > 0 && !fresh.some((j) => j.completedAt && Date.now() - j.completedAt < 60_000)) {
+      for (const j of completed) prevCompleteIds.current.add(j.id)
+      return
+    }
+    if (fresh.length > 0) {
+      for (const j of fresh) prevCompleteIds.current.add(j.id)
+      showToast(
+        fresh.length === 1
+          ? { text: 'Saved to Library · Play', sub: fresh[0].title, toLibrary: true }
+          : { text: `Saved ${fresh.length} files to Library`, toLibrary: true },
+      )
+    }
+  }, [downloads.jobs, showToast])
+
+  // Free-space guard data (Q090, D007, D018): native container free bytes,
+  // with a navigator.storage.estimate fallback inside LocalEngine (demo).
+  useEffect(() => {
+    if (!api) return
+    let alive = true
+    const unsubscribe = api.onStorage((snapshot) => {
+      if (alive && snapshot.freeBytes !== null) setFreeBytes(snapshot.freeBytes)
+    })
+    void api.requestStorageInfo()
+    const timer = setInterval(() => void api.requestStorageInfo(), 60_000)
+    return () => {
+      alive = false
+      unsubscribe()
+      clearInterval(timer)
+    }
+  }, [api])
 
   // Connect local engine
   const probe = useCallback(async () => {
@@ -196,6 +272,8 @@ export default function App() {
       prev.map((t) => (t.id === activeTabId ? { ...t, url: target, title: target } : t)),
     )
 
+    if (!privateMode) setRecents(pushRecent(target))
+
     if (requestNavigation(target)) return
 
     // Dev fallback
@@ -215,25 +293,40 @@ export default function App() {
   const download = async (formatId: string) => {
     if (!video) return
 
-    // Storage warning check (< 1 GB floor)
-    if (typeof navigator !== 'undefined' && 'storage' in navigator && navigator.storage?.estimate) {
-      try {
-        const { quota, usage } = await navigator.storage.estimate()
-        if (quota && usage && quota - usage < 1024 * 1024 * 1024) {
-          const proceed = window.confirm(
-            'Storage space is running low (< 1 GB free). Download anyway?',
-          )
-          if (!proceed) return
-        }
-      } catch {
-        /* storage estimate unavailable */
-      }
+    // Storage warning check (< 1 GB floor) against native free space (D018)
+    if (freeBytes !== null && freeBytes < 1024 * 1024 * 1024) {
+      const proceed = window.confirm(
+        'Storage space is running low (< 1 GB free). Download anyway?',
+      )
+      if (!proceed) return
     }
 
     try {
-      await downloads.start({ url: video.url, formatId })
+      await downloads.start({
+        url: video.url,
+        formatId,
+        title: video.title,
+        thumbnailUrl: video.thumbnailUrl,
+        durationSec: video.durationSec,
+        private: privateMode,
+      })
       setSheetOpen(false)
-      setTab('downloads')
+      // D046: chip flies from the sheet to the rail's Downloads icon,
+      // badge bumps — user stays put and watches (no forced screen jump).
+      const railEl = document.getElementById('rail-downloads')
+      const reduceMotion =
+        typeof window !== 'undefined' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      if (railEl && !reduceMotion) {
+        const rail = railEl.getBoundingClientRect()
+        setFly({
+          id: Date.now(),
+          x0: window.innerWidth / 2,
+          y0: window.innerHeight * 0.7,
+          x1: rail.left + rail.width / 2,
+          y1: rail.top + rail.height / 2,
+        })
+      }
     } catch (err) {
       setAnalyzeError(err instanceof Error ? err.message : 'Could not start that download')
       setSheetOpen(true)
@@ -245,7 +338,8 @@ export default function App() {
     if (!next.trim() && searched) resetSearch()
   }
 
-  // Tab management actions (Q010, Q016, Q046)
+  // Tab management actions (Q010, Q016, Q046) — index order mirrors the
+  // native tab list (web is the source of truth for ordering).
   const handleSelectTab = (id: string) => {
     setActiveTabId(id)
     const targetTab = browserTabs.find((t) => t.id === id)
@@ -253,7 +347,8 @@ export default function App() {
       setUrl(targetTab.url)
       if (targetTab.url) {
         setSearched(true)
-        requestSwitchTab(id)
+        const index = browserTabs.findIndex((t) => t.id === id)
+        if (index >= 0) requestSwitchTab(index)
       } else {
         resetSearch()
       }
@@ -262,9 +357,10 @@ export default function App() {
 
   const handleCloseTab = (id: string) => {
     if (browserTabs.length <= 1) return
+    const closeIndex = browserTabs.findIndex((t) => t.id === id)
+    if (closeIndex >= 0) requestCloseTab(closeIndex)
     const nextTabs = browserTabs.filter((t) => t.id !== id)
     setBrowserTabs(nextTabs)
-    requestCloseTab(id)
 
     if (activeTabId === id) {
       const fallback = nextTabs[nextTabs.length - 1]
@@ -283,19 +379,28 @@ export default function App() {
     requestNewTab()
   }
 
-  const heroActive = searched
   const shellMode = hasNativeShell()
-  const pillVisible = tab === 'home' && searched
-  const pillState = analyzing ? 'scanning' : analyzeError ? 'error' : video ? 'ready' : 'scanning'
+  // D050: the download pill lives on the browse surface whenever the
+  // format sheet is closed; it focuses the search while idle.
+  const homePillVisible = tab === 'home' && !sheetOpen
+  const pillState: 'scanning' | 'ready' | 'error' | 'idle' = analyzing
+    ? 'scanning'
+    : analyzeError
+      ? 'error'
+      : video
+        ? 'ready'
+        : 'idle'
   const selectedFormat = video?.formats.find((format) => format.id === selectedFormatId)
   const pillLabel =
     pillState === 'error'
       ? 'Try again'
       : pillState === 'ready' && selectedFormat
         ? resolutionLabel(selectedFormat)
-        : pillState === 'ready'
+        : pillState === 'ready' || pillState === 'idle'
           ? 'Download'
           : 'Scanning'
+  const stripJob = downloads.active[0] ?? null
+  const stripVisible = tab === 'home' && (stripJob !== null || playingJob !== null)
   const hint = analyzing
     ? 'Scanning for sources…'
     : video
@@ -317,21 +422,72 @@ export default function App() {
     />
   )
 
-  return (
-    <div className={`app${pillVisible ? ' app--pill' : ''}`}>
-      <button
-        type="button"
-        className={`app__gear${tab === 'settings' ? ' app__gear--active' : ''}`}
-        aria-label={tab === 'settings' ? 'Close settings' : 'Open settings'}
-        onClick={() => {
-          setTab(tab === 'settings' ? 'home' : 'settings')
-          if (tab !== 'settings') setSheetOpen(false)
-        }}
-      >
-        <SettingsIcon width={19} height={19} />
-      </button>
+  // ---- Downloads / Library interactions (D-ledger) ----
 
-      <main className="app__main">
+  const markPlayed = (job: DownloadJob) => {
+    setPlayingJob(job)
+    if (!job.playedAt) void api?.updateJob(job.id, { playedAt: Date.now() })
+  }
+
+  const shareJob = (job: DownloadJob) => {
+    if (!requestShareFile(job.filePath || job.url, job.title)) {
+      navigator.share?.({ title: job.title, url: job.filePath || job.url }).catch(() => {})
+    }
+  }
+
+  const openSourceInNewTab = (srcUrl: string) => {
+    const target = toNavigationTarget(srcUrl)
+    if (!target || browserTabs.length >= 10) return
+    const newId = `tab-${Date.now()}`
+    setBrowserTabs((prev) => [...prev, { id: newId, url: target, title: target }])
+    setActiveTabId(newId)
+    setUrl(target)
+    setSearched(true)
+    setTab('home')
+    setSheetOpen(false)
+    requestNewTab()
+    requestNavigation(target)
+  }
+
+  const gotoLibrary = (jobId?: string) => {
+    setTab('library')
+    if (jobId) setPulseJobId(jobId)
+  }
+
+  const busyIds = downloads.jobs
+    .filter((j) => j.status === 'downloading' || j.status === 'converting' || j.status === 'queued')
+    .map((j) => j.id)
+  const pausedIds = downloads.jobs.filter((j) => j.status === 'paused').map((j) => j.id)
+
+  const hasFailed = downloads.jobs.some((j) => j.status === 'error')
+  const libNewDot = downloads.jobs.some(
+    (j) => j.status === 'complete' && !j.playedAt && !j.isPrivate,
+  )
+
+  // Auto-clear the library pulse after it plays once (D020 re-entry guard)
+  useEffect(() => {
+    if (!pulseJobId) return
+    const t = setTimeout(() => setPulseJobId(null), 3500)
+    return () => clearTimeout(t)
+  }, [pulseJobId])
+
+  return (
+    <>
+      <NavRail
+        tab={tab}
+        onChange={(next) => {
+          setTab(next)
+          if (next !== 'home') setSheetOpen(false)
+        }}
+        activeCount={downloads.active.length}
+        hasFailed={hasFailed}
+        libNewDot={libNewDot}
+      />
+
+      <div
+        className={`app${tab === 'downloads' || tab === 'library' ? ' app--full' : ''}${homePillVisible ? ' app--pill' : ''}`}
+      >
+        <main className="app__main">
         {downloads.error && (
           <div className="alert" role="alert">
             <AlertIcon width={17} height={17} />
@@ -340,15 +496,26 @@ export default function App() {
         )}
 
         {tab === 'home' ? (
-          <section className={`hero hero--${heroActive ? 'active' : 'idle'}`}>
+          <section className={`hero hero--${searched ? 'active' : 'idle'}`}>
             {chip}
 
-            <div className="hero__brand">
-              <span className="hero__mark">
-                <DownloadIcon />
-              </span>
-              <span className="hero__wordmark">Video Downloader</span>
-            </div>
+            {/* Idle hero stack: brand + favorites/recents, or private card */}
+            {!searched && (
+              <HomeHero
+                favorites={favorites}
+                recents={recents}
+                privateMode={privateMode}
+                onLaunchFavorite={(fav) => {
+                  setUrl(fav.url)
+                  submitTarget(fav.url)
+                }}
+                onLaunchRecent={(text) => {
+                  setUrl(text)
+                  submitTarget(text)
+                }}
+                onFavoritesChange={setFavorites}
+              />
+            )}
 
             {/* Multi-Tab Strip (Q010, Q016) */}
             {searched && (
@@ -366,6 +533,7 @@ export default function App() {
               onChange={handleUrlChange}
               onSubmit={submitSearch}
               busy={analyzing}
+              inputRef={searchInputRef}
             />
 
             {/* Clipboard banner if URL found (Q026) */}
@@ -386,17 +554,7 @@ export default function App() {
               </div>
             )}
 
-            {/* Start Page Site Shortcuts (Q008, Q038) */}
-            {!searched && (
-              <ShortcutTiles
-                onSelect={(target) => {
-                  setUrl(target)
-                  submitTarget(target)
-                }}
-              />
-            )}
-
-            {pillVisible && !shellMode && (
+            {searched && !shellMode && (
               <div className="card browser-stub">
                 <div className="card__head">
                   <span className="card__title">In-app browser</span>
@@ -410,7 +568,7 @@ export default function App() {
               </div>
             )}
 
-            {pillVisible &&
+            {searched &&
               !sheetOpen &&
               (analyzeError ? (
                 <div className="alert" role="alert">
@@ -421,58 +579,83 @@ export default function App() {
                 <p className="detect-hint">{hint}</p>
               ) : null)}
           </section>
+        ) : tab === 'downloads' ? (
+          <DownloadsScreen
+            jobs={downloads.jobs}
+            history={history}
+            freeBytes={freeBytes}
+            onGoHome={() => setTab('home')}
+            onGoLibrary={gotoLibrary}
+            onCancel={(id) => void downloads.cancel(id)}
+            onRemove={(id) => void downloads.remove(id)}
+            onPause={(id) => void downloads.pause(id)}
+            onResume={(id) => void downloads.resume(id)}
+            onRetry={(id) => void downloads.retry(id)}
+            onUseCellular={(id) => void api?.updateJob(id, { waitingForWifi: false })}
+            onPauseAll={() => {
+              for (const id of busyIds) void downloads.pause(id)
+            }}
+            onResumeAll={() => {
+              for (const id of pausedIds) void downloads.resume(id)
+            }}
+            onCancelAll={() => {
+              for (const id of busyIds) void downloads.cancel(id)
+            }}
+            onClearFailed={() => void downloads.clearFailed()}
+            onPlay={markPlayed}
+            onClearHistory={() => {
+              clearHistory()
+              setHistory([])
+            }}
+          />
+        ) : tab === 'library' ? (
+          <LibraryScreen
+            jobs={downloads.jobs}
+            freeBytes={freeBytes}
+            pulseJobId={pulseJobId}
+            onGoHome={() => setTab('home')}
+            onPlay={markPlayed}
+            onShare={shareJob}
+            onDelete={(id) => void downloads.remove(id)}
+            onExportAll={() => requestExportAll()}
+            onOpenSource={openSourceInNewTab}
+          />
         ) : (
           <>
             <div className="screen-top">{chip}</div>
-            {tab === 'downloads' ? (
-              <DownloadQueue
-                jobs={downloads.active}
-                onCancel={(id) => void downloads.cancel(id)}
-                onRemove={(id) => void downloads.remove(id)}
-              />
-            ) : tab === 'downloaded' ? (
-              <LibraryPanel
-                jobs={downloads.finished}
-                onRemove={(id) => void downloads.remove(id)}
-                onClear={() => void downloads.clearFinished()}
-                onPlay={(job) => setPlayingJob(job)}
-                onShare={(job) => {
-                  if (!requestShareFile(job.filePath || job.url, job.title)) {
-                    navigator.share?.({ title: job.title, url: job.filePath || job.url }).catch(() => {})
-                  }
-                }}
-              />
-            ) : (
-              <SettingsPanel
-                theme={theme}
-                onThemeChange={setTheme}
-                onClearBrowsingData={() => {
-                  requestClearBrowsingData()
-                  localStorage.removeItem(TAB_STORAGE_KEY)
-                  setBrowserTabs([{ id: 'tab-1', url: '', title: 'Start' }])
-                }}
-                onExportAll={() => {
-                  requestExportAll()
-                }}
-              />
-            )}
+            <SettingsPanel
+              theme={theme}
+              onThemeChange={setTheme}
+              privateMode={privateMode}
+              onPrivateModeChange={setPrivateMode}
+              onClearBrowsingData={() => {
+                requestClearBrowsingData()
+                localStorage.removeItem(TAB_STORAGE_KEY)
+                setBrowserTabs([{ id: 'tab-1', url: '', title: 'Start' }])
+              }}
+              onExportAll={() => {
+                requestExportAll()
+              }}
+            />
           </>
         )}
       </main>
 
-      {pillVisible && (
-        <>
-          <div className="pill-layer">
-            <DownloadPill
-              state={pillState}
-              label={pillLabel}
-              onClick={() => {
-                if (pillState === 'error') void analyze()
-                else setSheetOpen(true)
-              }}
-            />
-          </div>
+      {tab === 'home' && homePillVisible && (
+        <div className={`pill-layer${stripVisible ? ' pill-layer--raised' : ''}`}>
+          <DownloadPill
+            state={pillState}
+            label={pillLabel}
+            onClick={() => {
+              if (pillState === 'error') void analyze()
+              else if (pillState === 'idle') searchInputRef.current?.focus()
+              else setSheetOpen(true)
+            }}
+          />
+        </div>
+      )}
 
+      {tab === 'home' && sheetOpen && (
           <SourceSheet open={sheetOpen} title={sheetTitle} onClose={() => setSheetOpen(false)}>
             {analyzing && (
               <div className="card skeleton" aria-hidden="true">
@@ -526,20 +709,59 @@ export default function App() {
               </>
             )}
           </SourceSheet>
-        </>
       )}
 
-      {/* In-app Media Player Modal (Q041, Q053, Q054) */}
-      <MediaPlayerModal job={playingJob} onClose={() => setPlayingJob(null)} />
+        {/* Live download / now-playing strip (design section K) */}
+        {stripVisible && (
+          <BottomStrip
+            active={stripJob}
+            playing={playingJob}
+            onTap={() => {
+              if (playingJob) setPlayingJob(null)
+              else setTab('downloads')
+            }}
+          />
+        )}
 
-      <BottomNav
-        tab={tab}
-        onChange={(next) => {
-          setTab(next)
-          if (next !== 'home') setSheetOpen(false)
-        }}
-        activeCount={downloads.active.length}
-      />
-    </div>
+        {/* In-app Media Player Modal (Q041, Q053, Q054) */}
+        <MediaPlayerModal
+          job={playingJob}
+          onClose={() => setPlayingJob(null)}
+          onProgress={(id, frac) => void api?.updateJob(id, { playbackProgress: frac })}
+        />
+      </div>
+
+      {/* Completion toast (D010) */}
+      {toast && (
+        <button
+          type="button"
+          className="toast"
+          onClick={() => {
+            if (toast.toLibrary) gotoLibrary()
+            setToast(null)
+          }}
+        >
+          <span className="toast__text">{toast.text}</span>
+          {toast.sub && <span className="toast__sub">{toast.sub}</span>}
+        </button>
+      )}
+
+      {/* Fly-to-rail chip (D046) */}
+      {fly && (
+        <span
+          key={fly.id}
+          className="flydot"
+          style={
+            {
+              '--fx': `${fly.x0}px`,
+              '--fy': `${fly.y0}px`,
+              '--tx': `${fly.x1}px`,
+              '--ty': `${fly.y1}px`,
+            } as CSSProperties
+          }
+          onAnimationEnd={() => setFly(null)}
+        />
+      )}
+    </>
   )
 }

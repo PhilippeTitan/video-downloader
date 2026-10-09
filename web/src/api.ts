@@ -16,6 +16,11 @@ import type {
 
 export type ApiMode = 'live'
 
+export interface StorageSnapshot {
+  /** Free bytes reported by the native container (null when unknown/demo). */
+  freeBytes: number | null
+}
+
 export interface ApiClient {
   readonly mode: ApiMode
   readonly label: string
@@ -26,6 +31,15 @@ export interface ApiClient {
   cancelJob(id: string): Promise<void>
   removeJob(id: string): Promise<void>
   clearFinished(): Promise<void>
+  pauseJob(id: string): Promise<void>
+  resumeJob(id: string): Promise<void>
+  retryJob(id: string): Promise<void>
+  /** Patch web-only fields (playedAt, playbackProgress, waitingForWifi, …). */
+  updateJob(id: string, patch: Partial<DownloadJob>): Promise<void>
+  /** Ask the shell for free space + on-disk files (D018, D038). */
+  requestStorageInfo(): Promise<void>
+  /** Subscribe to storage snapshots. Returns unsubscribe. */
+  onStorage(handler: (snapshot: StorageSnapshot) => void): () => void
 }
 
 class ApiError extends Error {}
@@ -80,6 +94,9 @@ export class LocalEngine implements ApiClient {
   readonly label = 'On-Device Engine'
 
   private jobs: DownloadJob[] = []
+  private simTimers = new Map<string, ReturnType<typeof setInterval>>()
+  private storageHandlers = new Set<(snapshot: StorageSnapshot) => void>()
+  private freeBytes: number | null = null
 
   constructor() {
     this.jobs = readStoredJobs()
@@ -88,18 +105,80 @@ export class LocalEngine implements ApiClient {
       window.addEventListener('message', (event) => {
         const data = event.data
         if (data && data.source === 'vd-native' && data.type === 'download-progress') {
-          const { id, receivedBytes, totalBytes, speedBps, status } = data.payload || {}
+          const { id, receivedBytes, totalBytes, speedBps, status, filePath, error, stage } =
+            data.payload || {}
           const job = this.jobs.find((j) => j.id === id)
           if (job) {
             if (receivedBytes !== undefined) job.receivedBytes = receivedBytes
             if (totalBytes !== undefined) job.totalBytes = totalBytes
             if (speedBps !== undefined) job.speedBps = speedBps
+            if (stage !== undefined) job.stage = stage
+            if (filePath !== undefined) job.filePath = filePath
             if (status) job.status = status
             if (status === 'complete') job.completedAt = Date.now()
+            if (status === 'error') {
+              job.error = error || job.error || 'Download failed'
+              job.speedBps = undefined
+            }
             writeStoredJobs(this.jobs)
+          }
+        } else if (data && data.source === 'vd-native' && data.type === 'storage-info') {
+          const { freeBytes, files } = data.payload || {}
+          if (typeof freeBytes === 'number') {
+            this.freeBytes = freeBytes
+            this.emitStorage()
+          }
+          if (Array.isArray(files)) {
+            this.sweepFilePresence(files as { name: string }[])
           }
         }
       })
+    }
+  }
+
+  /** D038: mark complete jobs whose file vanished from the native container. */
+  private sweepFilePresence(files: { name: string }[]) {
+    const names = new Set(files.map((f) => f.name))
+    let changed = false
+    for (const job of this.jobs) {
+      if (job.status !== 'complete') continue
+      const present =
+        names.has(`${job.id}.${job.ext}`) || names.has(`${job.id}.mp4`) || names.has(`${job.id}.m4a`)
+      const missing = !present
+      if (job.fileMissing !== missing) {
+        job.fileMissing = missing
+        changed = true
+      }
+    }
+    if (changed) writeStoredJobs(this.jobs)
+  }
+
+  private emitStorage() {
+    for (const handler of this.storageHandlers) {
+      handler({ freeBytes: this.freeBytes })
+    }
+  }
+
+  onStorage(handler: (snapshot: StorageSnapshot) => void): () => void {
+    this.storageHandlers.add(handler)
+    if (this.freeBytes !== null) handler({ freeBytes: this.freeBytes })
+    return () => this.storageHandlers.delete(handler)
+  }
+
+  async requestStorageInfo(): Promise<void> {
+    if (hasNativeShell()) {
+      sendNativeAction('storageInfo')
+      return
+    }
+    // Demo/standalone: approximate with the origin quota.
+    try {
+      if (typeof navigator !== 'undefined' && navigator.storage?.estimate) {
+        const { quota, usage } = await navigator.storage.estimate()
+        this.freeBytes = quota && usage ? Math.max(0, quota - usage) : null
+        this.emitStorage()
+      }
+    } catch {
+      /* estimate unavailable */
     }
   }
 
@@ -145,7 +224,8 @@ export class LocalEngine implements ApiClient {
     const job: DownloadJob = {
       id,
       url: request.url,
-      title: titleFromUrl(request.url),
+      title: request.title || titleFromUrl(request.url),
+      thumbnailUrl: request.thumbnailUrl,
       formatId: format.id,
       formatLabel: format.label,
       ext: format.ext,
@@ -153,6 +233,8 @@ export class LocalEngine implements ApiClient {
       receivedBytes: 0,
       totalBytes: format.filesizeBytes,
       speedBps: 8_500_000,
+      durationSec: request.durationSec,
+      isPrivate: request.private,
       createdAt: Date.now(),
     }
 
@@ -167,34 +249,39 @@ export class LocalEngine implements ApiClient {
         ext: format.ext,
         title: job.title,
         isAudio,
+        isPrivate: !!request.private,
       })
     } else {
       // Standalone browser simulation tick
-      this.simulateProgress(job)
+      this.simulateProgress(job.id)
     }
 
     return { ...job }
   }
 
-  private simulateProgress(job: DownloadJob) {
-    const total = job.totalBytes ?? 80_000_000
-    const step = total / 10
+  private simulateProgress(id: string) {
+    if (this.simTimers.has(id)) return
     const timer = setInterval(() => {
-      const currentJob = this.jobs.find((j) => j.id === job.id)
+      const currentJob = this.jobs.find((j) => j.id === id)
       if (!currentJob || currentJob.status !== 'downloading') {
         clearInterval(timer)
+        this.simTimers.delete(id)
         return
       }
 
-      currentJob.receivedBytes += step
+      const total = currentJob.totalBytes ?? 80_000_000
+      currentJob.receivedBytes = Math.min(total, currentJob.receivedBytes + total / 10)
       if (currentJob.receivedBytes >= total) {
         currentJob.receivedBytes = total
         currentJob.status = 'complete'
         currentJob.completedAt = Date.now()
+        currentJob.speedBps = undefined
         clearInterval(timer)
+        this.simTimers.delete(id)
       }
       writeStoredJobs(this.jobs)
     }, 400)
+    this.simTimers.set(id, timer)
   }
 
   async cancelJob(id: string): Promise<void> {
@@ -221,6 +308,65 @@ export class LocalEngine implements ApiClient {
       (j) => j.status !== 'complete' && j.status !== 'error' && j.status !== 'canceled',
     )
     writeStoredJobs(this.jobs)
+  }
+
+  async pauseJob(id: string): Promise<void> {
+    const job = this.jobs.find((j) => j.id === id)
+    if (job && (job.status === 'downloading' || job.status === 'queued')) {
+      job.status = 'paused'
+      job.speedBps = undefined
+      writeStoredJobs(this.jobs)
+      if (hasNativeShell()) {
+        sendNativeAction('pauseDownload', { id })
+      }
+    }
+  }
+
+  async resumeJob(id: string): Promise<void> {
+    const job = this.jobs.find((j) => j.id === id)
+    if (job && job.status === 'paused') {
+      job.status = 'downloading'
+      job.error = undefined
+      writeStoredJobs(this.jobs)
+      if (hasNativeShell()) {
+        sendNativeAction('resumeDownload', { id, receivedBytes: job.receivedBytes })
+      } else {
+        this.simulateProgress(id)
+      }
+    }
+  }
+
+  async retryJob(id: string): Promise<void> {
+    const job = this.jobs.find((j) => j.id === id)
+    if (job && (job.status === 'error' || job.status === 'canceled')) {
+      // D006: resume from byte offset when possible, else restart.
+      job.status = 'downloading'
+      job.error = undefined
+      job.speedBps = 8_500_000
+      writeStoredJobs(this.jobs)
+      if (hasNativeShell()) {
+        sendNativeAction('startDownload', {
+          id,
+          url: job.url,
+          ext: job.ext,
+          title: job.title,
+          isAudio: job.formatId.startsWith('a-'),
+          receivedBytes: job.receivedBytes,
+        })
+      } else {
+        this.simulateProgress(id)
+      }
+    }
+  }
+
+  async updateJob(id: string, patch: Partial<DownloadJob>): Promise<void> {
+    const job = this.jobs.find((j) => j.id === id)
+    if (!job) return
+    Object.assign(job, patch)
+    writeStoredJobs(this.jobs)
+    if (patch.waitingForWifi !== undefined && hasNativeShell()) {
+      sendNativeAction('useCellular', { id })
+    }
   }
 }
 

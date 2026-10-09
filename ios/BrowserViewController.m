@@ -1,8 +1,11 @@
 #import "BrowserViewController.h"
+#import "AppDelegate.h"
 
 static NSString *const kVDHandler = @"vd";
 static const NSInteger kMaxTabs = 10;          // Q016
 static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
+static NSString *const kJobMetaDefaultsKey = @"vd.jobmeta";   // Stage E: job title/ext/url across relaunch
+static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg";
 
 @interface BrowserViewController () <WKNavigationDelegate, WKScriptMessageHandler, NSURLSessionDownloadDelegate>
 @property (nonatomic, strong) NSMutableArray<WKWebView *> *tabs;
@@ -11,6 +14,14 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
 @property (nonatomic, strong) NSURLSession *downloadSession;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *taskJobMap;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSURLSessionDownloadTask *> *jobTaskMap;
+// Stage E: per-job metadata (title, ext, url, resumeData) kept across relaunches.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSDictionary *> *jobMetaMap;
+// Jobs the UI asked to pause — progress events are suppressed for these.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *pausedJobs;
+// Speed estimation (EMA) per job.
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastTickAt;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastTickBytes;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastSpeed;
 @end
 
 @implementation BrowserViewController
@@ -22,11 +33,48 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     self.activeTabIndex = 0;
     self.taskJobMap = [NSMutableDictionary dictionary];
     self.jobTaskMap = [NSMutableDictionary dictionary];
+    self.jobMetaMap = [NSMutableDictionary dictionary];
+    self.pausedJobs = [NSMutableDictionary dictionary];
+    self.lastTickAt = [NSMutableDictionary dictionary];
+    self.lastTickBytes = [NSMutableDictionary dictionary];
+    self.lastSpeed = [NSMutableDictionary dictionary];
+
+    NSDictionary *savedMeta = [[NSUserDefaults standardUserDefaults] dictionaryForKey:kJobMetaDefaultsKey];
+    if (savedMeta) {
+        [self.jobMetaMap addEntriesFromDictionary:savedMeta];
+    }
 
     // Background session configuration for continuous downloads (Q020)
-    NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:@"com.maurinex.videodownloader.bg"];
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration backgroundSessionConfigurationWithIdentifier:kBackgroundSessionID];
     config.allowsCellularAccess = YES;
-    self.downloadSession = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:[NSOperationQueue mainQueue]];
+    // Rebind surviving background tasks after relaunch so progress and file
+    // moves keep working (D048 rehydration).
+    __weak typeof(self) weakSelf = self;
+    self.downloadSession = [NSURLSession sessionWithConfiguration:config
+                                                         delegate:self
+                                                    delegateQueue:[NSOperationQueue mainQueue]
+                                               completionHandler:^(NSURLSession *session) {
+        [session getAllTasksWithCompletionHandler:^(NSArray<__kindof NSURLSessionTask *> *tasks) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                for (NSURLSessionTask *task in tasks) {
+                    NSString *jobId = task.taskDescription;
+                    if (!jobId.length) continue;
+                    weakSelf.taskJobMap[@(task.taskIdentifier)] = jobId;
+                    weakSelf.jobTaskMap[jobId] = (NSURLSessionDownloadTask *)task;
+                    if (task.state == NSURLSessionTaskStateSuspended) {
+                        [task resume];
+                    }
+                    if (!weakSelf.pausedJobs[jobId]) {
+                        [weakSelf sendToChrome:@{
+                            @"source": @"vd-native",
+                            @"type": @"download-progress",
+                            @"payload": @{ @"id": jobId, @"status": @"downloading" },
+                        }];
+                    }
+                }
+            });
+        }];
+    }];
 
     [self setupBrowsingTab];
     [self setupChrome];
@@ -187,29 +235,176 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     return downloads;
 }
 
+#pragma mark Job metadata (Stage E)
+
+- (void)persistJobMeta {
+    [[NSUserDefaults standardUserDefaults] setObject:self.jobMetaMap forKey:kJobMetaDefaultsKey];
+}
+
+- (void)setJobMeta:(NSDictionary *)meta forID:(NSString *)jobId {
+    if (!jobId) return;
+    if (meta) {
+        self.jobMetaMap[jobId] = meta;
+    } else {
+        [self.jobMetaMap removeObjectForKey:jobId];
+    }
+    [self persistJobMeta];
+}
+
+- (NSString *)extensionForJob:(NSString *)jobId {
+    NSString *ext = self.jobMetaMap[jobId][@"ext"];
+    return ext.length ? ext : @"mp4";
+}
+
+- (void)clearJobTracking:(NSString *)jobId {
+    [self.pausedJobs removeObjectForKey:jobId];
+    [self.lastTickAt removeObjectForKey:jobId];
+    [self.lastTickBytes removeObjectForKey:jobId];
+    [self.lastSpeed removeObjectForKey:jobId];
+    [self setJobMeta:nil forID:jobId];
+}
+
+#pragma mark Start / pause / resume / cancel / remove
+
 - (void)startNativeDownloadWithID:(NSString *)jobId urlString:(NSString *)urlString title:(NSString *)title ext:(NSString *)ext {
     NSURL *url = [NSURL URLWithString:urlString];
     if (!url || !jobId) return;
 
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    // Forward Safari UA and Referer per Q059
-    [req setValue:@"Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
-    if ([self activeTab].URL.absoluteString) {
-        [req setValue:[self activeTab].URL.absoluteString forHTTPHeaderField:@"Referer"];
+    NSString *useExt = ext.length ? ext : @"mp4";
+
+    // Surviving metadata from a previous attempt (relaunch or retry) keeps its
+    // resumeData; everything else is refreshed from this request.
+    NSMutableDictionary *meta = [NSMutableDictionary dictionaryWithDictionary:self.jobMetaMap[jobId] ?: @{}];
+    meta[@"url"] = urlString;
+    meta[@"ext"] = useExt;
+    if (title.length) meta[@"title"] = title;
+    [self setJobMeta:meta forID:jobId];
+    [self.pausedJobs removeObjectForKey:jobId];
+
+    NSURLSessionDownloadTask *task = nil;
+    NSData *resumeData = meta[@"resumeData"];
+    if ([resumeData isKindOfClass:NSData.class] && resumeData.length) {
+        // D006: pick up where the failed attempt stopped.
+        task = [self.downloadSession downloadTaskWithResumeData:resumeData];
+        [meta removeObjectForKey:@"resumeData"];
+        [self setJobMeta:meta forID:jobId];
+    } else {
+        NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+        // Forward Safari UA and Referer per Q059
+        [req setValue:@"Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
+        if ([self activeTab].URL.absoluteString) {
+            [req setValue:[self activeTab].URL.absoluteString forHTTPHeaderField:@"Referer"];
+        }
+        task = [self.downloadSession downloadTaskWithRequest:req];
     }
 
-    NSURLSessionDownloadTask *task = [self.downloadSession downloadTaskWithRequest:req];
+    task.taskDescription = jobId;   // survives relaunch for rehydration
     self.taskJobMap[@(task.taskIdentifier)] = jobId;
     self.jobTaskMap[jobId] = task;
+    self.lastTickAt[jobId] = nil;
+    self.lastTickBytes[jobId] = nil;
+    self.lastSpeed[jobId] = nil;
     [task resume];
+}
+
+- (void)pauseNativeDownloadWithID:(NSString *)jobId {
+    if (!jobId) return;
+    self.pausedJobs[jobId] = @YES;
+    NSURLSessionDownloadTask *task = self.jobTaskMap[jobId];
+    if (task && task.state == NSURLSessionTaskStateRunning) {
+        [task suspend];
+    }
+}
+
+- (void)resumeNativeDownloadWithID:(NSString *)jobId {
+    if (!jobId) return;
+    [self.pausedJobs removeObjectForKey:jobId];
+
+    NSURLSessionDownloadTask *task = self.jobTaskMap[jobId];
+    if (task && task.state != NSURLSessionTaskStateCompleted) {
+        [task resume];
+        [self sendToChrome:@{
+            @"source": @"vd-native",
+            @"type": @"download-progress",
+            @"payload": @{ @"id": jobId, @"status": @"downloading" },
+        }];
+        return;
+    }
+
+    // Task is gone (relaunch/eviction) — restart from stored metadata.
+    NSDictionary *meta = self.jobMetaMap[jobId];
+    NSString *url = meta[@"url"];
+    if (url.length) {
+        [self startNativeDownloadWithID:jobId urlString:url title:meta[@"title"] ext:meta[@"ext"]];
+        [self sendToChrome:@{
+            @"source": @"vd-native",
+            @"type": @"download-progress",
+            @"payload": @{ @"id": jobId, @"status": @"downloading" },
+        }];
+    }
 }
 
 - (void)cancelNativeDownloadWithID:(NSString *)jobId {
     NSURLSessionDownloadTask *task = self.jobTaskMap[jobId];
     if (task) {
+        // Drop the mapping first so didCompleteWithError ignores the cancel.
+        [self.taskJobMap removeObjectForKey:@(task.taskIdentifier)];
         [task cancel];
         [self.jobTaskMap removeObjectForKey:jobId];
     }
+    [self clearJobTracking:jobId];
+}
+
+- (void)removeNativeDownloadWithID:(NSString *)jobId {
+    if (!jobId) return;
+    NSURLSessionDownloadTask *task = self.jobTaskMap[jobId];
+    if (task) {
+        [self.taskJobMap removeObjectForKey:@(task.taskIdentifier)];
+        [task cancel];
+        [self.jobTaskMap removeObjectForKey:jobId];
+    }
+    // Delete the saved file(s): current ext plus the legacy .mp4 name.
+    NSString *dir = [self privateDownloadDirectory];
+    NSSet *candidates = [NSSet setWithObjects:
+                         [NSString stringWithFormat:@"%@.%@", jobId, [self extensionForJob:jobId]],
+                         [NSString stringWithFormat:@"%@.mp4", jobId],
+                         [NSString stringWithFormat:@"%@.m4a", jobId], nil];
+    for (NSString *name in candidates) {
+        NSString *path = [dir stringByAppendingPathComponent:name];
+        if ([NSFileManager.defaultManager fileExistsAtPath:path]) {
+            [NSFileManager.defaultManager removeItemAtPath:path error:NULL];
+        }
+    }
+    [self clearJobTracking:jobId];
+    [self sendStorageInfo];
+}
+
+#pragma mark Storage info (D038 file sweep, D018 free space)
+
+- (void)sendStorageInfo {
+    NSString *dir = [self privateDownloadDirectory];
+    NSArray<NSString *> *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:dir error:NULL] ?: @[];
+    NSMutableArray *files = [NSMutableArray arrayWithCapacity:names.count];
+    for (NSString *name in names) {
+        NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:[dir stringByAppendingPathComponent:name] error:NULL];
+        [files addObject:@{
+            @"name": name,
+            @"sizeBytes": attrs[NSFileSize] ?: @0,
+        }];
+    }
+    NSNumber *free = nil;
+    NSDictionary *fsAttrs = [NSFileManager.defaultManager attributesOfFileSystemForPath:NSHomeDirectory() error:NULL];
+    if ([fsAttrs[NSFileSystemFreeSize] isKindOfClass:NSNumber.class]) {
+        free = fsAttrs[NSFileSystemFreeSize];
+    }
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"storage-info",
+        @"payload": @{
+            @"files": files,
+            @"freeBytes": free ?: @0,
+        }
+    }];
 }
 
 #pragma mark - NSURLSessionDownloadDelegate (Q013, Q019, Q020)
@@ -220,14 +415,41 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
                               totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
     NSString *jobId = self.taskJobMap[@(downloadTask.taskIdentifier)];
     if (!jobId) return;
+    // Paused jobs stay paused in the UI even if suspend() is a no-op for
+    // background-session tasks — just stop forwarding events.
+    if (self.pausedJobs[jobId]) return;
 
+    // Speed: EMA over throttled ticks (>= 250 ms apart).
+    NSTimeInterval now = NSDate.date.timeIntervalSince1970;
+    NSNumber *prevAt = self.lastTickAt[jobId];
+    NSNumber *prevBytes = self.lastTickBytes[jobId];
+    long long speed = self.lastSpeed[jobId].longLongValue;
+    if (prevAt && prevBytes && now - prevAt.doubleValue >= 0.25) {
+        double dt = now - prevAt.doubleValue;
+        long long raw = (long long)((totalBytesWritten - prevBytes.longLongValue) / dt);
+        if (raw < 0) raw = 0;
+        speed = (long long)(speed * 0.7 + raw * 0.3);
+        self.lastSpeed[jobId] = @(speed);
+        self.lastTickAt[jobId] = @(now);
+        self.lastTickBytes[jobId] = @(totalBytesWritten);
+    } else if (!prevAt) {
+        self.lastTickAt[jobId] = @(now);
+        self.lastTickBytes[jobId] = @(totalBytesWritten);
+    } else {
+        // Too soon since the last send — skip this callback entirely.
+        return;
+    }
+
+    long long expected = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : 0;
     [self sendToChrome:@{
         @"source": @"vd-native",
         @"type": @"download-progress",
         @"payload": @{
             @"id": jobId,
             @"receivedBytes": @(totalBytesWritten),
-            @"totalBytes": @(totalBytesExpectedToWrite),
+            @"totalBytes": @(expected),
+            @"speedBps": @(speed),
+            @"stage": @"downloading",
             @"status": @"downloading",
         }
     }];
@@ -239,10 +461,16 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
     if (!jobId) return;
 
     NSString *destDir = [self privateDownloadDirectory];
-    NSString *filename = [NSString stringWithFormat:@"%@.mp4", jobId];
+    NSString *filename = [NSString stringWithFormat:@"%@.%@", jobId, [self extensionForJob:jobId]];
     NSString *destPath = [destDir stringByAppendingPathComponent:filename];
 
+    // A retry after a partial move can leave a stale file behind.
+    if ([NSFileManager.defaultManager fileExistsAtPath:destPath]) {
+        [NSFileManager.defaultManager removeItemAtPath:destPath error:NULL];
+    }
     [NSFileManager.defaultManager moveItemAtURL:location toURL:[NSURL fileURLWithPath:destPath] error:NULL];
+
+    [self clearJobTracking:jobId];
 
     [self sendToChrome:@{
         @"source": @"vd-native",
@@ -253,21 +481,45 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
             @"filePath": destPath,
         }
     }];
+    // Refresh free space + file-presence sweep right after a save (D018, D038).
+    [self sendStorageInfo];
 }
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     NSString *jobId = self.taskJobMap[@(task.taskIdentifier)];
-    if (jobId && error) {
-        [self sendToChrome:@{
-            @"source": @"vd-native",
-            @"type": @"download-progress",
-            @"payload": @{
-                @"id": jobId,
-                @"status": @"error",
-                @"error": error.localizedDescription ?: @"Download failed",
-            }
-        }];
+    if (!jobId || !error) return;
+    // User-initiated cancel already reported its own state (or is a pause).
+    if ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled) return;
+    if (self.pausedJobs[jobId]) return;
+
+    // Keep resume data so the next retry continues from this byte offset (D006).
+    NSData *resumeData = error.userInfo[NSURLSessionDownloadTaskResumeData];
+    NSDictionary *meta = self.jobMetaMap[jobId];
+    if ([resumeData isKindOfClass:NSData.class] && resumeData.length && meta) {
+        NSMutableDictionary *next = [NSMutableDictionary dictionaryWithDictionary:meta];
+        next[@"resumeData"] = resumeData;
+        [self setJobMeta:next forID:jobId];
     }
+
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"download-progress",
+        @"payload": @{
+            @"id": jobId,
+            @"status": @"error",
+            @"error": error.localizedDescription ?: @"Download failed",
+        }
+    }];
+}
+
+- (void)URLSessionDidFinishEventsForBackgroundURLSession:(NSURLSession *)session {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AppDelegate *app = (AppDelegate *)UIApplication.sharedApplication.delegate;
+        if ([app isKindOfClass:AppDelegate.class] && app.backgroundSessionCompletionHandler) {
+            app.backgroundSessionCompletionHandler();
+            app.backgroundSessionCompletionHandler = nil;
+        }
+    });
 }
 
 #pragma mark - Share & Export (Q042, Q070)
@@ -342,14 +594,26 @@ static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
         NSString *url = payload[@"url"];
         [self addTabWithURL:url];
     } else if ([type isEqualToString:@"closeTab"]) {
-        [self closeTabAtIndex:self.activeTabIndex];
+        NSNumber *index = [payload[@"index"] isKindOfClass:NSNumber.class] ? payload[@"index"] : nil;
+        [self closeTabAtIndex:index ? index.integerValue : self.activeTabIndex];
     } else if ([type isEqualToString:@"switchTab"]) {
         NSNumber *index = [payload[@"index"] isKindOfClass:NSNumber.class] ? payload[@"index"] : nil;
         if (index) [self selectTabAtIndex:index.integerValue];
     } else if ([type isEqualToString:@"startDownload"]) {
         [self startNativeDownloadWithID:payload[@"id"] urlString:payload[@"url"] title:payload[@"title"] ext:payload[@"ext"]];
+    } else if ([type isEqualToString:@"pauseDownload"]) {
+        [self pauseNativeDownloadWithID:payload[@"id"]];
+    } else if ([type isEqualToString:@"resumeDownload"]) {
+        [self resumeNativeDownloadWithID:payload[@"id"]];
     } else if ([type isEqualToString:@"cancelDownload"]) {
         [self cancelNativeDownloadWithID:payload[@"id"]];
+    } else if ([type isEqualToString:@"removeDownload"]) {
+        [self removeNativeDownloadWithID:payload[@"id"]];
+    } else if ([type isEqualToString:@"useCellular"]) {
+        // Cellular is always allowed (config.allowsCellularAccess = YES); the
+        // action exists for future Wi-Fi-only gating — acknowledge no-op.
+    } else if ([type isEqualToString:@"storageInfo"]) {
+        [self sendStorageInfo];
     } else if ([type isEqualToString:@"shareFile"]) {
         [self shareFileAtPath:payload[@"filePath"]];
     } else if ([type isEqualToString:@"exportAll"]) {

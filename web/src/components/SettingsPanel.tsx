@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import type { Theme } from '../types'
-import { ShareIcon, TrashIcon } from './Icons'
+import { EyeOffIcon, ShareIcon, TrashIcon } from './Icons'
 
 interface SettingsPanelProps {
   theme: Theme
   onThemeChange: (theme: Theme) => void
+  privateMode: boolean
+  onPrivateModeChange: (value: boolean) => void
   onClearBrowsingData: () => void
   onExportAll: () => void
   onClose?: () => void
@@ -13,6 +15,8 @@ interface SettingsPanelProps {
 export function SettingsPanel({
   theme,
   onThemeChange,
+  privateMode,
+  onPrivateModeChange,
   onClearBrowsingData,
   onExportAll,
 }: SettingsPanelProps) {
@@ -66,6 +70,24 @@ export function SettingsPanel({
             </button>
           ))}
         </div>
+      </div>
+
+      {/* Private mode (D025) */}
+      <div className="settings-card">
+        <h3 className="settings-card__label">Private mode</h3>
+        <p className="settings-card__desc">
+          Skip recent searches and badge new downloads as Private
+        </p>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={privateMode}
+          className={`settings-btn${privateMode ? ' settings-btn--on' : ''}`}
+          onClick={() => onPrivateModeChange(!privateMode)}
+        >
+          <EyeOffIcon width={18} height={18} />
+          <span>{privateMode ? 'Private mode on' : 'Private mode off'}</span>
+        </button>
       </div>
 
       {/* Version Information (Q055) */}

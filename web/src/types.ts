@@ -38,6 +38,7 @@ export type JobStatus =
   | 'queued'
   | 'downloading'
   | 'converting'
+  | 'paused'
   | 'complete'
   | 'error'
   | 'canceled'
@@ -61,11 +62,28 @@ export interface DownloadJob {
   filePath?: string
   createdAt: number
   completedAt?: number
+  /** Q049 persisted-field schema (v1) — extra fields reconciled by native sweep. */
+  durationSec?: number
+  isPrivate?: boolean
+  /** Set on first play; clears the Library "new" dot (D020). */
+  playedAt?: number
+  /** Resume position as 0..1 for files longer than ~5 min (D020). */
+  playbackProgress?: number
+  /** Native sweep marks rows whose file vanished (D038). */
+  fileMissing?: boolean
+  /** NWPathMonitor state; dormant on Wi-Fi-only iPads (D008). */
+  waitingForWifi?: boolean
+  /** Current pipeline stage for the Details drawer (D036). */
+  stage?: string
 }
 
 export interface NewDownloadRequest {
   url: string
   formatId: string
+  title?: string
+  thumbnailUrl?: string
+  durationSec?: number
+  private?: boolean
 }
 
 export interface HealthResponse {
@@ -73,8 +91,8 @@ export interface HealthResponse {
   version?: string
 }
 
-/** Bottom navigation destinations. */
-export type Tab = 'home' | 'downloads' | 'downloaded' | 'settings'
+/** Left rail destinations (D041). */
+export type Tab = 'home' | 'downloads' | 'library' | 'settings'
 
 /** Browser tab in multi-tab browsing (Q010, Q016). */
 export interface BrowserTab {

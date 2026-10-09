@@ -11,4 +11,13 @@
     return YES;
 }
 
+// Background downloads finishing while the app is suspended relaunch it here (Q020).
+- (void)application:(UIApplication *)application
+    handleEventsForBackgroundURLSession:(NSString *)identifier
+                      completionHandler:(void (^)(void))completionHandler {
+    if ([identifier isEqualToString:@"com.maurinex.videodownloader.bg"]) {
+        self.backgroundSessionCompletionHandler = completionHandler;
+    }
+}
+
 @end

@@ -1,25 +1,39 @@
 :root {
   color-scheme: dark;
 
-  --bg: #08090d;
-  --bg-glow: rgba(109, 94, 252, 0.18);
-  --surface: #12151d;
-  --surface-2: #191d27;
+  --bg: #0e0f14;
+  --bg-glow: rgba(124, 92, 255, 0.18);
+  --surface: #181a22;
+  --surface-2: #1f2230;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.16);
-  --text: #e9ebf2;
-  --muted: #8a92a6;
-  --accent: #6d5efc;
-  --accent-soft: rgba(109, 94, 252, 0.16);
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --err: #f87171;
+  --text: #e8eaf0;
+  --muted: #9aa3b2;
+  --accent: #7c5cff;
+  --accent-soft: rgba(124, 92, 255, 0.16);
+  --ok: #3ecf8e;
+  --warn: #f5b84a;
+  --err: #ff7a9c;
+
+  /* Chrome surfaces from the Gen-2 design tokens. */
+  --field: #1d2029;
+  --chip: #232736;
+  --panel: #161821;
+  --dashed: #4a5068;
+  --divider: #2d3144;
+  --tint: #2d2a55;
+  --tint-deep: #171326;
+  --tint-active: #3a2f78;
+  --ink-active: #d7ccff;
+  --accent-light: #b7a6ff;
+
   --radius: 16px;
   --radius-sm: 11px;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 
-  /* Tab bar metrics. --nav-total is what floating elements clear. */
-  --nav-bar: 69px;
+  /* Floating-element clearances. --nav-total is what bottom floats clear.
+     The bottom nav is gone (left rail instead), so --nav-bar stays 0. */
+  --nav-bar: 0px;
   --nav-inset: env(safe-area-inset-bottom, 0px);
   --nav-bottom-gap: 0px;
   --nav-total: calc(var(--nav-bar) + var(--nav-inset) + var(--nav-bottom-gap));
@@ -35,7 +49,7 @@
 [data-theme="light"] {
   color-scheme: light;
   --bg: #f8f9fc;
-  --bg-glow: rgba(109, 94, 252, 0.12);
+  --bg-glow: rgba(124, 92, 255, 0.12);
   --surface: #ffffff;
   --surface-2: #f0f2f7;
   --border: rgba(0, 0, 0, 0.08);
@@ -44,16 +58,26 @@
   --muted: #64748b;
   --accent: #5b4cf0;
   --accent-soft: rgba(91, 76, 240, 0.12);
-  --ok: #10b981;
-  --warn: #f59e0b;
-  --err: #ef4444;
+  --ok: #0d9668;
+  --warn: #c2840a;
+  --err: #e0476f;
+  --field: #eef1f7;
+  --chip: #e7eaf2;
+  --panel: #ffffff;
+  --dashed: #b6bdcd;
+  --divider: rgba(15, 23, 42, 0.1);
+  --tint: rgba(124, 92, 255, 0.12);
+  --tint-deep: rgba(124, 92, 255, 0.07);
+  --tint-active: rgba(124, 92, 255, 0.2);
+  --ink-active: #4b3fd0;
+  --accent-light: #6d5efc;
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
     --bg: #f8f9fc;
-    --bg-glow: rgba(109, 94, 252, 0.12);
+    --bg-glow: rgba(124, 92, 255, 0.12);
     --surface: #ffffff;
     --surface-2: #f0f2f7;
     --border: rgba(0, 0, 0, 0.08);
@@ -62,9 +86,19 @@
     --muted: #64748b;
     --accent: #5b4cf0;
     --accent-soft: rgba(91, 76, 240, 0.12);
-    --ok: #10b981;
-    --warn: #f59e0b;
-    --err: #ef4444;
+    --ok: #0d9668;
+    --warn: #c2840a;
+    --err: #e0476f;
+    --field: #eef1f7;
+    --chip: #e7eaf2;
+    --panel: #ffffff;
+    --dashed: #b6bdcd;
+    --divider: rgba(15, 23, 42, 0.1);
+    --tint: rgba(124, 92, 255, 0.12);
+    --tint-deep: rgba(124, 92, 255, 0.07);
+    --tint-active: rgba(124, 92, 255, 0.2);
+    --ink-active: #4b3fd0;
+    --accent-light: #6d5efc;
   }
 }
 

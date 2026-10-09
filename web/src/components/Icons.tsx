@@ -249,3 +249,163 @@ export function PlusIcon(props: IconProps) {
     </svg>
   )
 }
+
+/* ---- Left rail + Downloads/Library chrome (design port) ---- */
+
+/** Rail Home: globe with meridians (prototype nav item 1). */
+export function GlobeIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+    </svg>
+  )
+}
+
+/** Clock/history (Downloads top-left, recents strip). */
+export function ClockIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v5h5" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  )
+}
+
+/** "More" dots (row + header overflow menus). */
+export function DotsIcon(props: IconProps) {
+  return (
+    <svg {...base} fill="currentColor" stroke="none" {...props}>
+      <circle cx="5" cy="12" r="1.8" />
+      <circle cx="12" cy="12" r="1.8" />
+      <circle cx="19" cy="12" r="1.8" />
+    </svg>
+  )
+}
+
+/** Layout toggle: cards (2x2 grid). */
+export function GridIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="3" y="3" width="8" height="8" rx="2" />
+      <rect x="13" y="3" width="8" height="8" rx="2" />
+      <rect x="3" y="13" width="8" height="8" rx="2" />
+      <rect x="13" y="13" width="8" height="8" rx="2" />
+    </svg>
+  )
+}
+
+/** Layout toggle: list rows. */
+export function ListIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
+  )
+}
+
+/** Info (hold-menu + details). */
+export function InfoIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v6M12 7.5v.5" />
+    </svg>
+  )
+}
+
+/** Pause (row control + Pause all). */
+export function PauseIcon(props: IconProps) {
+  return (
+    <svg {...base} fill="currentColor" stroke="none" {...props}>
+      <rect x="6" y="5" width="4" height="14" rx="1.2" />
+      <rect x="14" y="5" width="4" height="14" rx="1.2" />
+    </svg>
+  )
+}
+
+/** Solid play triangle (row control + menu items). */
+export function PlaySolidIcon(props: IconProps) {
+  return (
+    <svg {...base} fill="currentColor" stroke="none" {...props}>
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  )
+}
+
+/** Circle-check (Select menu item / select mode). */
+export function SelectIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8 12.5l3 3 5-6" />
+    </svg>
+  )
+}
+
+/** Plain X (cancel-all icon). */
+export function XIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
+  )
+}
+
+/** Storage/database (Storage details menu item). */
+export function StorageIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <ellipse cx="12" cy="6" rx="8" ry="3" />
+      <path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+    </svg>
+  )
+}
+
+/** Back/forward chevrons (top chrome). */
+export function ChevronLeftIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M15 5l-7 7 7 7" />
+    </svg>
+  )
+}
+
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M9 5l7 7-7 7" />
+    </svg>
+  )
+}
+
+/** Hamburger (menu morph button). */
+export function MenuIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 7h16M4 12h16M4 17h16" />
+    </svg>
+  )
+}
+
+/** Warning triangle (low-storage banner). */
+export function WarningIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 4l9 16H3z" />
+      <path d="M12 10v4M12 17v.5" />
+    </svg>
+  )
+}
+
+/** Eye-off (private browsing). */
+export function EyeOffIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 3l18 18" />
+      <path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c5 0 8.5 4.2 9.5 6a14 14 0 0 1-2.7 3.3M6.4 7.6A14 14 0 0 0 2.5 12c1 1.8 4.5 6 9.5 6a9.8 9.8 0 0 0 4-.9" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
+  )
+}
