@@ -4,8 +4,9 @@
   width: 100%;
   max-width: 620px;
   margin: 0 auto;
-  /* Left padding clears the fixed nav rail; bottom clears the home indicator. */
-  padding: 16px 14px calc(var(--nav-total) + 22px) 80px;
+  /* Top clears the status bar (the shell chrome is full-screen under it);
+     left clears the fixed nav rail; bottom clears the home indicator. */
+  padding: calc(env(safe-area-inset-top, 0px) + 16px) 14px calc(var(--nav-total) + 22px) 80px;
   display: flex;
   flex-direction: column;
   gap: 14px;

@@ -3,7 +3,6 @@
 
 static NSString *const kVDHandler = @"vd";
 static const NSInteger kMaxTabs = 10;          // Q016
-static const CGFloat kChromeHeight = 460.0;    // bottom overlay; tune with UI
 static NSString *const kJobMetaDefaultsKey = @"vd.jobmeta";   // Stage E: job title/ext/url across relaunch
 static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg";
 
@@ -114,8 +113,10 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     WKWebViewConfiguration *config = [WKWebViewConfiguration new];
     [config.userContentController addScriptMessageHandler:self name:kVDHandler];
 
-    CGRect frame = CGRectMake(0, 0, self.view.bounds.size.width, kChromeHeight);
-    self.chrome = [[ChromeWebView alloc] initWithFrame:frame configuration:config];
+    // Full-screen chrome OVER the browsing webview (S001 / v1-spec §1:
+    // "browsing WKWebView sits under transparent native chrome"). The page
+    // area clears itself via body.is-browsing when a search session runs.
+    self.chrome = [[ChromeWebView alloc] initWithFrame:self.view.bounds configuration:config];
 
     NSString *wwwIndex = [NSBundle.mainBundle pathForResource:@"index" ofType:@"html" inDirectory:@"www"];
     if (!wwwIndex) {
@@ -131,8 +132,8 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     [NSLayoutConstraint activateConstraints:@[
         [self.chrome.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.chrome.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.chrome.topAnchor constraintEqualToAnchor:self.view.topAnchor],
         [self.chrome.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [self.chrome.heightAnchor constraintEqualToConstant:kChromeHeight],
     ]];
 }
 
@@ -168,6 +169,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     WKWebView *web = [[WKWebView alloc] initWithFrame:self.view.bounds
                                         configuration:[self browsingConfiguration]];
     web.navigationDelegate = self;
+    web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view insertSubview:web belowSubview:self.chrome];
     [self.tabs addObject:web];
     [self selectTabAtIndex:(NSInteger)self.tabs.count - 1];
