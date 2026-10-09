@@ -20,17 +20,17 @@ import { HomeHero } from './components/HomeHero'
 import { MediaPlayerModal } from './components/MediaPlayerModal'
 import { ModeChip } from './components/ModeChip'
 import { NavRail } from './components/NavRail'
+import { ResultsPanel } from './components/ResultsPanel'
 import { SearchBar } from './components/SearchBar'
 import { SettingsPanel } from './components/SettingsPanel'
-import { SourceSheet } from './components/SourceSheet'
 import { TabBar } from './components/TabBar'
-import { VideoPanel } from './components/VideoPanel'
 import { loadFavorites } from './favorites'
 import type { Favorite } from './favorites'
 import { defaultFormatId, normalizeUrl, resolutionLabel, toNavigationTarget } from './format'
 import { clearHistory, loadHistory, syncHistory } from './history'
 import type { HistoryEntry } from './history'
 import { useDownloads } from './hooks/useDownloads'
+import { useSequence } from './hooks/useSequence'
 import { loadRecents, pushRecent } from './recents'
 import { DownloadsScreen } from './screens/DownloadsScreen'
 import { LibraryScreen } from './screens/LibraryScreen'
@@ -40,6 +40,9 @@ import './App.css'
 const TAB_STORAGE_KEY = 'vd-tabs-v1'
 const THEME_STORAGE_KEY = 'vd-theme-v1'
 const PRIVATE_STORAGE_KEY = 'vd-private-v1'
+/** load gives the sniffer this long to report before the sequence parks
+ *  in the error state (real pages usually detect well inside it). */
+const SEQ_NO_DETECTION_MS = 12_000
 
 function loadSavedTabs(): BrowserTab[] {
   try {
@@ -71,8 +74,8 @@ export default function App() {
   const [selectedFormatId, setSelectedFormatId] = useState<string | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
   const [searched, setSearched] = useState(false)
-  const [sheetOpen, setSheetOpen] = useState(false)
   const [playingJob, setPlayingJob] = useState<DownloadJob | null>(null)
   const [clipboardUrl, setClipboardUrl] = useState<string | null>(null)
 
@@ -104,6 +107,42 @@ export default function App() {
 
   const analyzeSeq = useRef(0)
   const downloads = useDownloads(api, mode)
+
+  // Gen-3 sequence machine: pill flight → load gate → results park → return.
+  const seq = useSequence({
+    onTypingDone: (text) => setUrl(text),
+    onScanStart: (text, nav) => (nav ? submitTarget(text) : startAnalyzeOnly(text)),
+    onLoadSettled: (text) => {
+      if (!privateMode) setRecents(pushRecent(text))
+    },
+    onReturnStart: () => {
+      // Cancel any pending analyze; results stay visible while clipping away.
+      analyzeSeq.current += 1
+      setAnalyzing(false)
+    },
+    onIdle: () => resetSearch(),
+  })
+
+  // Analyze gate: park the sequence when the real lookup settles. In the
+  // native shell the sniffer reports whenever it likes, so wait for activity
+  // and only fall through to the error park after the no-detection window.
+  useEffect(() => {
+    if (seq.phase !== 'load') return
+    if (analyzing) return // in-flight: wait for the settle below
+    if (video) {
+      seq.notifyAnalyzeDone(true)
+      return
+    }
+    if (analyzeError) {
+      seq.notifyAnalyzeDone(false)
+      return
+    }
+    const deadline = window.setTimeout(() => {
+      setAnalyzeError('No video found on that page')
+      seq.notifyAnalyzeDone(false)
+    }, SEQ_NO_DETECTION_MS)
+    return () => window.clearTimeout(deadline)
+  }, [seq.phase, seq.notifyAnalyzeDone, analyzing, video, analyzeError])
 
   // Apply theme to DOM
   useEffect(() => {
@@ -237,22 +276,24 @@ export default function App() {
     analyzeSeq.current += 1
     setAnalyzing(false)
     setSearched(false)
-    setSheetOpen(false)
     setUrl('')
     setVideo(null)
     setSelectedFormatId(null)
     setAnalyzeError(null)
+    setDownloadError(null)
   }, [])
 
-  // Listen for sniffed sources from shell (Q006, Q046)
+  // Listen for sniffed sources from shell (Q006, Q046). Only the active
+  // sequence load gate consumes detections — stray reports are ignored.
   useEffect(() => {
     if (!api) return
     return onDetection((event) => {
       // If event has tabId and doesn't match active tab, ignore (Q046)
       if (event.tabId && event.tabId !== activeTabId) return
+      if (seq.phase !== 'load') return
       void analyze(event.url)
     })
-  }, [api, analyze, activeTabId])
+  }, [api, analyze, activeTabId, seq.phase])
 
   const submitTarget = (targetUrl: string) => {
     const target = toNavigationTarget(targetUrl)
@@ -263,7 +304,7 @@ export default function App() {
     setVideo(null)
     setSelectedFormatId(null)
     setAnalyzeError(null)
-    setSheetOpen(false)
+    setDownloadError(null)
     setSearched(true)
     setClipboardUrl(null)
 
@@ -271,8 +312,6 @@ export default function App() {
     setBrowserTabs((prev) =>
       prev.map((t) => (t.id === activeTabId ? { ...t, url: target, title: target } : t)),
     )
-
-    if (!privateMode) setRecents(pushRecent(target))
 
     if (requestNavigation(target)) return
 
@@ -285,8 +324,29 @@ export default function App() {
     }, 1400)
   }
 
+  /** nav=false: the page is already loaded (tab switch) — just re-read it. */
+  const startAnalyzeOnly = (targetUrl: string) => {
+    const target = toNavigationTarget(targetUrl)
+    if (!target) return
+    analyzeSeq.current += 1
+    setAnalyzing(false)
+    setVideo(null)
+    setSelectedFormatId(null)
+    setAnalyzeError(null)
+    setDownloadError(null)
+    setSearched(true)
+    setClipboardUrl(null)
+    void analyze(target)
+  }
+
   const submitSearch = () => {
-    submitTarget(url)
+    if (!toNavigationTarget(url)) return
+    // Parked pill + Enter: re-run the lookup in place (no new flight).
+    if (seq.phase === 'done' || seq.phase === 'error') {
+      seq.reload(url)
+      return
+    }
+    seq.submit(url)
   }
 
   // Free-space check guard before download (Q090)
@@ -302,6 +362,7 @@ export default function App() {
     }
 
     try {
+      setDownloadError(null)
       await downloads.start({
         url: video.url,
         formatId,
@@ -310,8 +371,9 @@ export default function App() {
         durationSec: video.durationSec,
         private: privateMode,
       })
-      setSheetOpen(false)
-      // D046: chip flies from the sheet to the rail's Downloads icon,
+      // Sweep the whole session back home; the chip flies to the rail below.
+      seq.downloadStarted()
+      // D046: chip flies from the panel to the rail's Downloads icon,
       // badge bumps — user stays put and watches (no forced screen jump).
       const railEl = document.getElementById('rail-downloads')
       const reduceMotion =
@@ -328,14 +390,13 @@ export default function App() {
         })
       }
     } catch (err) {
-      setAnalyzeError(err instanceof Error ? err.message : 'Could not start that download')
-      setSheetOpen(true)
+      setDownloadError(err instanceof Error ? err.message : 'Could not start that download')
     }
   }
 
   const handleUrlChange = (next: string) => {
     setUrl(next)
-    if (!next.trim() && searched) resetSearch()
+    if (!next.trim() && seq.phase !== null) seq.dismiss()
   }
 
   // Tab management actions (Q010, Q016, Q046) — index order mirrors the
@@ -343,15 +404,16 @@ export default function App() {
   const handleSelectTab = (id: string) => {
     setActiveTabId(id)
     const targetTab = browserTabs.find((t) => t.id === id)
-    if (targetTab) {
-      setUrl(targetTab.url)
-      if (targetTab.url) {
-        setSearched(true)
-        const index = browserTabs.findIndex((t) => t.id === id)
-        if (index >= 0) requestSwitchTab(index)
-      } else {
-        resetSearch()
-      }
+    if (!targetTab) return
+    // Kill any running session, then choreograph the switch: a loaded tab
+    // flies straight into load (nav=false — the page is already there).
+    seq.cancelJumpCut()
+    if (targetTab.url) {
+      const index = browserTabs.findIndex((t) => t.id === id)
+      if (index >= 0) requestSwitchTab(index)
+      seq.submit(targetTab.url, false)
+    } else {
+      resetSearch()
     }
   }
 
@@ -372,6 +434,7 @@ export default function App() {
     if (browserTabs.length >= 10) return
     const newId = `tab-${Date.now()}`
     const newTabObj: BrowserTab = { id: newId, url: '', title: 'New Tab' }
+    seq.cancelJumpCut()
     setBrowserTabs((prev) => [...prev, newTabObj])
     setActiveTabId(newId)
     setUrl('')
@@ -380,16 +443,42 @@ export default function App() {
   }
 
   const shellMode = hasNativeShell()
-  // D050: the download pill lives on the browse surface whenever the
-  // format sheet is closed; it focuses the search while idle.
-  const homePillVisible = tab === 'home' && !sheetOpen
-  const pillState: 'scanning' | 'ready' | 'error' | 'idle' = analyzing
-    ? 'scanning'
-    : analyzeError
-      ? 'error'
-      : video
-        ? 'ready'
-        : 'idle'
+  const seqPhase = seq.phase
+  const homePillVisible = tab === 'home'
+  // Park window: pill parked at top, TabBar + status + results live here.
+  const parkWindow = seqPhase === 'load' || seqPhase === 'done' || seqPhase === 'error' || seqPhase === 'rdown'
+  // Home stack (brand + tiles) is mounted unless the park hides it.
+  const stackMounted =
+    seqPhase === null ||
+    seqPhase === 'fade' ||
+    seqPhase === 'scan' ||
+    seqPhase === 'rdown' ||
+    seqPhase === 'rup' ||
+    seqPhase === 'rfade'
+  const heroState =
+    seqPhase === null ? (searched ? 'active' : 'idle') : seqPhase === 'fade' || seqPhase === 'scan' ? 'idle' : 'active'
+  const heroExtra =
+    seqPhase !== null && parkWindow
+      ? ' hero--parked'
+      : seqPhase === 'fade' || seqPhase === 'scan'
+        ? ' hero--flying'
+        : ''
+  const statusText =
+    seqPhase === 'load'
+      ? 'Scanning for sources…'
+      : seqPhase === 'error'
+        ? 'Couldn\u2019t read that link'
+        : video
+          ? 'Source found — pick a format'
+          : null
+  const pillState: 'scanning' | 'ready' | 'error' | 'idle' =
+    seqPhase === 'load' || analyzing
+      ? 'scanning'
+      : analyzeError
+        ? 'error'
+        : video
+          ? 'ready'
+          : 'idle'
   const selectedFormat = video?.formats.find((format) => format.id === selectedFormatId)
   const pillLabel =
     pillState === 'error'
@@ -401,16 +490,6 @@ export default function App() {
           : 'Scanning'
   const stripJob = downloads.active[0] ?? null
   const stripVisible = tab === 'home' && (stripJob !== null || playingJob !== null)
-  const hint = analyzing
-    ? 'Scanning for sources…'
-    : video
-      ? 'Source found — tap the pill to view formats'
-      : null
-  const sheetTitle = analyzing
-    ? 'Scanning…'
-    : analyzeError
-      ? 'Couldn\u2019t read that link'
-      : 'Detected source'
 
   const chip = (
     <ModeChip
@@ -439,17 +518,17 @@ export default function App() {
     const target = toNavigationTarget(srcUrl)
     if (!target || browserTabs.length >= 10) return
     const newId = `tab-${Date.now()}`
+    seq.cancelJumpCut()
     setBrowserTabs((prev) => [...prev, { id: newId, url: target, title: target }])
     setActiveTabId(newId)
-    setUrl(target)
-    setSearched(true)
     setTab('home')
-    setSheetOpen(false)
     requestNewTab()
-    requestNavigation(target)
+    // Full choreography: scan → load fires requestNavigation for the new tab.
+    seq.submit(target)
   }
 
   const gotoLibrary = (jobId?: string) => {
+    seq.cancelJumpCut()
     setTab('library')
     if (jobId) setPulseJobId(jobId)
   }
@@ -476,8 +555,8 @@ export default function App() {
       <NavRail
         tab={tab}
         onChange={(next) => {
+          if (next !== 'home') seq.cancelJumpCut()
           setTab(next)
-          if (next !== 'home') setSheetOpen(false)
         }}
         activeCount={downloads.active.length}
         hasFailed={hasFailed}
@@ -496,29 +575,29 @@ export default function App() {
         )}
 
         {tab === 'home' ? (
-          <section className={`hero hero--${searched ? 'active' : 'idle'}`}>
+          <section
+            ref={seq.stageRef}
+            className={`hero hero--${heroState}${heroExtra}`}
+          >
             {chip}
 
-            {/* Idle hero stack: brand + favorites/recents, or private card */}
-            {!searched && (
+            {/* Idle hero stack: brand + favorites/recents, or private card.
+                Stays mounted through the return sweep so it can fade back in. */}
+            {stackMounted && (
               <HomeHero
                 favorites={favorites}
                 recents={recents}
                 privateMode={privateMode}
-                onLaunchFavorite={(fav) => {
-                  setUrl(fav.url)
-                  submitTarget(fav.url)
-                }}
-                onLaunchRecent={(text) => {
-                  setUrl(text)
-                  submitTarget(text)
-                }}
+                launched={seq.text}
+                dimOp={seq.dimOp}
+                onLaunchFavorite={(fav) => seq.launch(fav.url)}
+                onLaunchRecent={(text) => seq.launch(text)}
                 onFavoritesChange={setFavorites}
               />
             )}
 
-            {/* Multi-Tab Strip (Q010, Q016) */}
-            {searched && (
+            {/* Multi-Tab Strip (Q010, Q016) — parked only (top park slot). */}
+            {parkWindow && (
               <TabBar
                 tabs={browserTabs}
                 activeTabId={activeTabId}
@@ -529,22 +608,21 @@ export default function App() {
             )}
 
             <SearchBar
-              value={url}
+              value={seqPhase === 'fade' ? seq.typed : url}
               onChange={handleUrlChange}
               onSubmit={submitSearch}
-              busy={analyzing}
+              busy={seqPhase === 'load' || seqPhase === 'done'}
               inputRef={searchInputRef}
             />
 
-            {/* Clipboard banner if URL found (Q026) */}
-            {!searched && clipboardUrl && (
+            {/* Clipboard banner if URL found (Q026) — idle only. */}
+            {seqPhase === null && !searched && clipboardUrl && (
               <div
                 className="clipboard-banner"
                 role="button"
                 tabIndex={0}
                 onClick={() => {
-                  setUrl(clipboardUrl)
-                  submitTarget(clipboardUrl)
+                  seq.launch(clipboardUrl)
                 }}
               >
                 <span className="clipboard-banner__text">
@@ -554,30 +632,24 @@ export default function App() {
               </div>
             )}
 
-            {searched && !shellMode && (
-              <div className="card browser-stub">
-                <div className="card__head">
-                  <span className="card__title">In-app browser</span>
-                  <span className="badge badge--dim">Preview</span>
-                </div>
-                <p className="browser-stub__text">
-                  Live pages render here inside the iOS app. Without the shell this preview
-                  opened your link in a new tab instead — on-device the sniffer watches the
-                  page and reports videos to the pill.
-                </p>
-              </div>
-            )}
+            {/* Sequence status line (parked under the pill). */}
+            {parkWindow && statusText && <p className="seq-status">{statusText}</p>}
 
-            {searched &&
-              !sheetOpen &&
-              (analyzeError ? (
-                <div className="alert" role="alert">
-                  <AlertIcon width={17} height={17} />
-                  <span>{analyzeError}</span>
-                </div>
-              ) : hint ? (
-                <p className="detect-hint">{hint}</p>
-              ) : null)}
+            {/* Choreographed results: formats, CTA, errors, dev stub. */}
+            {(seqPhase === 'done' || seqPhase === 'error' || seqPhase === 'rdown') && (
+              <ResultsPanel
+                phase={seqPhase}
+                video={video}
+                selectedFormatId={selectedFormatId}
+                error={analyzeError}
+                downloadError={downloadError}
+                hasShell={shellMode}
+                onSelect={setSelectedFormatId}
+                onDownload={(formatId) => void download(formatId)}
+                onRetry={() => seq.retry()}
+                onDismiss={() => seq.dismiss()}
+              />
+            )}
           </section>
         ) : tab === 'downloads' ? (
           <DownloadsScreen
@@ -642,73 +714,19 @@ export default function App() {
       </main>
 
       {tab === 'home' && homePillVisible && (
-        <div className={`pill-layer${stripVisible ? ' pill-layer--raised' : ''}`}>
+        <div
+          className={`pill-layer${stripVisible ? ' pill-layer--raised' : ''}${seq.flying ? ' pill-layer--seq-hidden' : ''}`}
+        >
           <DownloadPill
             state={pillState}
             label={pillLabel}
             onClick={() => {
-              if (pillState === 'error') void analyze()
+              if (pillState === 'error') seq.retry()
+              else if (pillState === 'ready' && selectedFormat) void download(selectedFormat.id)
               else if (pillState === 'idle') searchInputRef.current?.focus()
-              else setSheetOpen(true)
             }}
           />
         </div>
-      )}
-
-      {tab === 'home' && sheetOpen && (
-          <SourceSheet open={sheetOpen} title={sheetTitle} onClose={() => setSheetOpen(false)}>
-            {analyzing && (
-              <div className="card skeleton" aria-hidden="true">
-                <div className="skeleton__row">
-                  <span className="sk sk--thumb" />
-                  <span className="skeleton__col">
-                    <span className="sk sk--line" />
-                    <span className="sk sk--line sk--short" />
-                  </span>
-                </div>
-                <span className="sk sk--block" />
-                <span className="sk sk--block" />
-              </div>
-            )}
-
-            {analyzeError && (
-              <>
-                <div className="alert" role="alert">
-                  <AlertIcon width={17} height={17} />
-                  <span>{analyzeError}</span>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn--primary btn--block"
-                  onClick={() => void analyze()}
-                >
-                  Retry
-                </button>
-              </>
-            )}
-
-            {video && (
-              <>
-                <VideoPanel
-                  key={video.id}
-                  video={video}
-                  selectedId={selectedFormatId}
-                  onSelect={setSelectedFormatId}
-                  onDismiss={resetSearch}
-                />
-                {selectedFormat && (
-                  <button
-                    type="button"
-                    className="btn btn--primary btn--block"
-                    onClick={() => void download(selectedFormat.id)}
-                  >
-                    Download {resolutionLabel(selectedFormat)} ·{' '}
-                    {selectedFormat.ext.toUpperCase()}
-                  </button>
-                )}
-              </>
-            )}
-          </SourceSheet>
       )}
 
         {/* Live download / now-playing strip (design section K) */}

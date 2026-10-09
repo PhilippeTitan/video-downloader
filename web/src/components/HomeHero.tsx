@@ -7,6 +7,10 @@ export interface HomeHeroProps {
   favorites: Favorite[]
   recents: string[]
   privateMode: boolean
+  /** Launch text of the active sequence session (tile to dim). */
+  launched?: string
+  /** fade 1→0 / rfade 0→1 dim on the launched tile (null: full opacity). */
+  dimOp?: number | null
   onLaunchFavorite: (fav: Favorite) => void
   onLaunchRecent: (text: string) => void
   onFavoritesChange: (next: Favorite[]) => void
@@ -21,6 +25,8 @@ export function HomeHero({
   favorites,
   recents,
   privateMode,
+  launched,
+  dimOp,
   onLaunchFavorite,
   onLaunchRecent,
   onFavoritesChange,
@@ -46,11 +52,18 @@ export function HomeHero({
           <>
             <Favorites
               favorites={favorites}
+              launched={launched}
+              dimOp={dimOp}
               onLaunch={onLaunchFavorite}
               onChange={onFavoritesChange}
             />
             {recents.length > 0 && (
-              <RecentsBlock recents={recents} onLaunch={onLaunchRecent} />
+              <RecentsBlock
+                recents={recents}
+                launched={launched}
+                dimOp={dimOp}
+                onLaunch={onLaunchRecent}
+              />
             )}
           </>
         )}
@@ -59,7 +72,17 @@ export function HomeHero({
   )
 }
 
-function RecentsBlock({ recents, onLaunch }: { recents: string[]; onLaunch: (t: string) => void }) {
+function RecentsBlock({
+  recents,
+  launched,
+  dimOp,
+  onLaunch,
+}: {
+  recents: string[]
+  launched?: string
+  dimOp?: number | null
+  onLaunch: (t: string) => void
+}) {
   const { trackRef, offset, dragging, didDrag, handlers } = useMarquee({ speed: 25 })
 
   const tile = (text: string, clone: boolean) => (
@@ -69,6 +92,7 @@ function RecentsBlock({ recents, onLaunch }: { recents: string[]; onLaunch: (t: 
       className="mtile mtile--recent"
       aria-hidden={clone || undefined}
       tabIndex={clone ? -1 : undefined}
+      style={dimOp !== null && dimOp !== undefined && text === launched ? { opacity: dimOp } : undefined}
       onClick={() => {
         if (didDrag()) return
         onLaunch(text)

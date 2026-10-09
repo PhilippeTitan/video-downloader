@@ -55,7 +55,8 @@ export function SearchBar({ value, onChange, onSubmit, busy, inputRef }: SearchB
       className="searchbar"
       onSubmit={(event) => {
         event.preventDefault()
-        if (canSubmit && !busy) onSubmit()
+        // The sequence machine guards re-entry; parked submits reload.
+        if (canSubmit) onSubmit()
       }}
     >
       <div className="searchbar__field">

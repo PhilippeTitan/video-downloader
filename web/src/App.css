@@ -29,12 +29,8 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-/* Idle home: hero fills the remaining space; the brand/favorites stack
-   and the search pill are absolutely placed against it, bottom-anchored
-   just below screen center (design section C). */
-.hero--idle {
+  /* Stable full-height stage for the whole sequence — the pill park math
+     measures this box once at launch, so it must not resize mid-flight. */
   flex: 1 1 auto;
   min-height: 540px;
 }
@@ -73,17 +69,15 @@
   white-space: nowrap;
 }
 
-.hero--active .hero__brand {
-  display: none;
-}
-
 @media (max-width: 767px) {
   .hero__wordmark {
     font-size: 24px;
   }
 }
 
-/* Bottom-anchored hero stack: brand + favorites/recents (or private). */
+/* Bottom-anchored hero stack: brand + favorites/recents (or private).
+   --seq-stack-op fades the whole stack back in during rfade; --seq-clip
+   wipes it from the bottom as the pill flies up (prototype inset 0 0 B 0). */
 .hstack {
   position: absolute;
   left: 0;
@@ -94,6 +88,8 @@
   align-items: center;
   gap: 32px;
   pointer-events: none;
+  opacity: var(--seq-stack-op, 1);
+  clip-path: inset(0 0 var(--seq-clip, 0px) 0);
 }
 
 .hstack__body {
@@ -106,13 +102,15 @@
   pointer-events: auto;
 }
 
-/* Search pill pinned to the vertical center of the idle hero. */
-.hero--idle > .searchbar {
+/* Search pill pinned to the vertical center of the idle hero — and the
+   flight path for the sequence: --seq-y parks it at the top, --seq-w
+   morphs 560 → 492 with the flight progress (design section B). */
+.hero > .searchbar {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: min(560px, 100%);
-  transform: translate(-50%, -30px);
+  width: min(var(--seq-w, 560px), 100%);
+  transform: translate(-50%, calc(-30px + var(--seq-y, 0px)));
   z-index: 5;
 }
 
@@ -139,6 +137,56 @@
   gap: 14px;
   margin-top: 14px;
   animation: rise 0.5s var(--ease) both;
+}
+
+/* ------------------------------------------------ sequence status line */
+/* Sits between the parked pill (top 56 + 60) and the results panel; clips
+   with the results wipe as the pill sweeps back down over it. */
+.seq-status {
+  position: absolute;
+  top: 124px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--muted);
+  opacity: var(--seq-res-op, 0);
+  transform: translateY(var(--seq-res-y, 16px));
+  clip-path: inset(var(--seq-clip-top, 0px) 0 0 0);
+  pointer-events: none;
+  animation: vdpop 0.3s var(--ease) both;
+}
+
+/* --------------------------------------------------- sequence results */
+/* Choreographed panel (design B): reveals with the done ramp, clips away
+   from the top as the pill sweeps down on return. */
+.results-panel {
+  position: absolute;
+  top: 156px;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  opacity: var(--seq-res-op, 0);
+  transform: translateY(var(--seq-res-y, 16px));
+  clip-path: inset(var(--seq-clip-top, 0px) 0 0 0);
+  pointer-events: auto;
+}
+
+.results-panel__inner {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 4px 20px 88px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Staggered entrance: children carry --i (0, 1, 2, …). */
+.results-panel__item {
+  animation: vdpop 0.42s var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
 }
 
 .screen-top {
@@ -367,6 +415,13 @@
   opacity: 1;
 }
 
+/* Sequence laser: the ring is driven by --seq-laser during flight/park.
+   :not(:focus-within) keeps the plain focus ring available while parked. */
+.hero--flying .searchbar__field:not(:focus-within)::before,
+.hero--active .searchbar__field:not(:focus-within)::before {
+  opacity: var(--seq-laser, 0);
+}
+
 /* Runner ring: five racing dash layers while a lookup runs. */
 .searchbar__runner {
   position: absolute;
@@ -376,6 +431,7 @@
   height: 70px;
   pointer-events: none;
   filter: drop-shadow(0 0 7px rgba(155, 131, 255, 0.9));
+  opacity: var(--seq-run-op, 0);
 }
 
 .runner {
@@ -916,7 +972,8 @@
   padding-bottom: calc(var(--nav-total) + 60px + 34px);
 }
 
-/* D050: flat accent pill, bottom-right, morphs above the bottom strip. */
+/* D050: flat accent pill, bottom-right, morphs above the bottom strip.
+   Hidden while the sequence's own pill is flying (fade/scan/return). */
 .pill-layer {
   position: fixed;
   right: 28px;
@@ -926,7 +983,12 @@
   justify-content: flex-end;
   pointer-events: none;
   animation: pill-in 0.42s var(--ease) both;
-  transition: bottom 0.3s var(--ease);
+  transition: bottom 0.3s var(--ease), opacity 0.25s ease;
+}
+
+.pill-layer--seq-hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .pill-layer--raised {
@@ -1284,6 +1346,17 @@ body.is-browsing {
   width: 100%;
   margin-bottom: 6px;
   overflow: hidden;
+}
+
+/* Parked only: the strip takes the hero's top slot (pill parks at 56px)
+   without affecting the measured stage height. */
+.hero--parked .tab-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin-bottom: 0;
+  z-index: 4;
 }
 
 .tab-strip__scroll {
@@ -3642,14 +3715,21 @@ body.is-browsing {
   max-width: min(560px, 100%);
 }
 
-/* Reduced motion: kill marquee drift via JS + these entrance animations. */
+/* Reduced motion: kill marquee drift via JS + these entrance animations,
+   and snap the sequence vars instead of easing the laser. */
 @media (prefers-reduced-motion: reduce) {
   .runner,
   .privatecard,
   .favmodal,
   .favmodal-backdrop,
   .bottomstrip,
-  .pill-layer {
+  .pill-layer,
+  .seq-status,
+  .results-panel__item {
     animation: none !important;
+  }
+
+  .searchbar__field::before {
+    transition: none;
   }
 }

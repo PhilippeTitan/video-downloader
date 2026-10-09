@@ -6,12 +6,16 @@ import { CloseIcon, PlusIcon } from './Icons'
 
 interface FavoritesProps {
   favorites: Favorite[]
+  /** Launch text of the active sequence session (tile to dim). */
+  launched?: string
+  /** fade 1→0 / rfade 0→1 dim on the launched tile (null: full opacity). */
+  dimOp?: number | null
   onLaunch: (fav: Favorite) => void
   onChange: (next: Favorite[]) => void
 }
 
 /** Auto-scrolling favorites marquee with the dashed Add tile (design D). */
-export function Favorites({ favorites, onLaunch, onChange }: FavoritesProps) {
+export function Favorites({ favorites, launched, dimOp, onLaunch, onChange }: FavoritesProps) {
   const [modalOpen, setModalOpen] = useState(false)
   const { trackRef, offset, dragging, didDrag, handlers } = useMarquee({
     speed: -27,
@@ -32,6 +36,7 @@ export function Favorites({ favorites, onLaunch, onChange }: FavoritesProps) {
         className="mtile mtile--fav"
         aria-hidden={clone || undefined}
         tabIndex={clone ? -1 : undefined}
+        style={dimOp !== null && dimOp !== undefined && fav.url === launched ? { opacity: dimOp } : undefined}
         onClick={() => {
           if (didDrag()) return
           onLaunch(fav)
