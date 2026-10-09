@@ -1,8 +1,38 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
+import type { ReactNode } from 'react'
 import { addFavorite, FAV_PALETTE, removeFavorite } from '../favorites'
 import type { Favorite } from '../favorites'
 import { useMarquee } from '../hooks/useMarquee'
-import { CloseIcon, PlusIcon } from './Icons'
+import {
+  CloseIcon,
+  InstagramBrandIcon,
+  PlusIcon,
+  TikTokBrandIcon,
+  XBrandIcon,
+  YouTubeBrandIcon,
+} from './Icons'
+
+/**
+ * Real brand logo for the seeded shortcuts; user-added favorites keep the
+ * letter fallback. Matched on registrable-ish domain (suffix), so
+ * "m.youtube.com" and "youtu.be" both hit the YouTube mark.
+ */
+function brandMark(url: string): ReactNode | null {
+  const host = url
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .split('/')[0]
+  const size = { width: 34, height: 34 }
+  if (host === 'youtu.be' || host.endsWith('youtube.com')) return <YouTubeBrandIcon {...size} />
+  if (host.endsWith('tiktok.com')) return <TikTokBrandIcon {...size} />
+  if (host.endsWith('instagram.com')) return <InstagramBrandIcon {...size} />
+  if (host === 'x.com' || host.endsWith('twitter.com')) return <XBrandIcon {...size} />
+  return null
+}
+
 
 interface FavoritesProps {
   favorites: Favorite[]
@@ -49,7 +79,7 @@ export function Favorites({ favorites, launched, dimOp, onLaunch, onChange }: Fa
             color: FAV_PALETTE[fav.color]?.ink,
           }}
         >
-          {fav.label.charAt(0).toUpperCase()}
+          {brandMark(fav.url) ?? fav.label.charAt(0).toUpperCase()}
         </span>
         <span className="mtile__label">{fav.label}</span>
       </button>
@@ -135,7 +165,10 @@ function AddFavoriteModal({ open, onClose, onSubmit }: AddFavoriteModalProps) {
     }
   }
 
-  return (
+  // The hero stack sets clip-path for the launch wipe, which makes it a
+  // containing block for position:fixed — this dialog has to escape to
+  // <body> or it renders (and hit-tests) inside the hero box.
+  return createPortal(
     <div
       className="favmodal-backdrop"
       role="presentation"
@@ -198,6 +231,7 @@ function AddFavoriteModal({ open, onClose, onSubmit }: AddFavoriteModalProps) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

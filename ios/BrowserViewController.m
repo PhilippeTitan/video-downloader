@@ -21,6 +21,9 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastTickAt;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastTickBytes;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *lastSpeed;
+// Framed browsing pane helpers — implemented below, called from the tab code.
+- (void)resetPaneForWebView:(WKWebView *)web;
+- (void)applyBrowserPane:(NSDictionary *)payload;
 @end
 
 @implementation BrowserViewController
@@ -159,6 +162,9 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     WKWebView *previous = self.tabs[self.activeTabIndex];
     WKWebView *next = self.tabs[index];
     [previous removeFromSuperview];
+    // Tab switches always resume the fullscreen-behind-chrome layout; the UI
+    // re-sends browserPane for the pane window if it still wants one.
+    [self resetPaneForWebView:next];
     [self.view insertSubview:next belowSubview:self.chrome];
     next.frame = self.view.bounds;
     self.activeTabIndex = index;
@@ -195,6 +201,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     }
     if (wasActive) {
         WKWebView *next = self.tabs[self.activeTabIndex];
+        [self resetPaneForWebView:next];
         next.frame = self.view.bounds;
         [self.view insertSubview:next belowSubview:self.chrome];
     }
@@ -221,6 +228,55 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
         @"type": @"detect",
         @"payload": payload,
     }];
+}
+
+#pragma mark - Framed browsing pane (v1-spec §1, browser-slot)
+
+/** Undo the pane treatment on a browsing view that is going away from the slot. */
+- (void)resetPaneForWebView:(WKWebView *)web {
+    if (!web) return;
+    web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    web.layer.cornerRadius = 0;
+    web.layer.masksToBounds = NO;
+}
+
+/**
+ * Lifts the ACTIVE browsing WebView ABOVE the transparent chrome and pins it
+ * to the rect the web UI reports for its `.browser-slot` element, so a search
+ * opens its page inside our own shell instead of full-bleed behind it.
+ *
+ * The slot is reported in CSS pixels; with a width=device-width page one CSS
+ * pixel is one point, and the chrome WebView has no content inset, so its
+ * viewport origin equals self.view's origin.
+ *
+ * payload == nil (the UI outside the load window) drops the view back to
+ * fullscreen BEHIND the chrome.
+ */
+- (void)applyBrowserPane:(NSDictionary *)payload {
+    WKWebView *web = [self activeTab];
+    if (!web) return;
+
+    NSNumber *x = payload[@"x"];
+    NSNumber *y = payload[@"y"];
+    NSNumber *w = payload[@"w"];
+    NSNumber *h = payload[@"h"];
+    BOOL frameable = [x isKindOfClass:NSNumber.class] && [y isKindOfClass:NSNumber.class]
+        && [w isKindOfClass:NSNumber.class] && [h isKindOfClass:NSNumber.class]
+        && w.doubleValue >= 1 && h.doubleValue >= 1;
+
+    if (!frameable) {
+        [self resetPaneForWebView:web];
+        if (web.superview) [self.view insertSubview:web belowSubview:self.chrome];
+        web.frame = self.view.bounds;
+        return;
+    }
+
+    web.autoresizingMask = UIViewAutoresizingNone;
+    web.layer.cornerRadius = 18;
+    web.layer.masksToBounds = YES;
+    if (web.superview != self.view) [self.view addSubview:web];
+    [self.view bringSubviewToFront:web]; // over the chrome, confined to the slot
+    web.frame = CGRectMake(x.doubleValue, y.doubleValue, w.doubleValue, h.doubleValue);
 }
 
 #pragma mark - Storage & Downloads (Q013, Q020, Q031, Q042, Q070)
@@ -590,6 +646,8 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
         [[self activeTab] goForward];
     } else if ([type isEqualToString:@"reload"]) {
         [[self activeTab] reload];
+    } else if ([type isEqualToString:@"browserPane"]) {
+        [self applyBrowserPane:payload];
     } else if ([type isEqualToString:@"newTab"]) {
         NSString *url = payload[@"url"];
         [self addTabWithURL:url];

@@ -10,6 +10,7 @@ import {
   requestCloseTab,
   requestNewTab,
   requestReload,
+  requestBrowserPane,
   requestShareFile,
   requestClearBrowsingData,
   requestExportAll,
@@ -105,6 +106,7 @@ export default function App() {
     () => localStorage.getItem(PRIVATE_STORAGE_KEY) === '1',
   )
   const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const browserSlotRef = useRef<HTMLDivElement | null>(null)
 
   const analyzeSeq = useRef(0)
   const downloads = useDownloads(api, mode)
@@ -458,6 +460,34 @@ export default function App() {
   const homePillVisible = tab === 'home'
   // Park window: pill parked at top, TabBar + status + results live here.
   const parkWindow = seqPhase === 'load' || seqPhase === 'done' || seqPhase === 'error' || seqPhase === 'rdown'
+
+  // Safari-style content pane: while the sequence parks in load, the native
+  // shell lifts the browsing WebView ABOVE the chrome to exactly the slot's
+  // rect, so the page renders inside a framed pane instead of behind the UI.
+  // Outside that window it stays fullscreen behind us. Re-sent on
+  // resize/scroll (chrome coords can drift) and on tab switches.
+  const paneOn = shellMode && tab === 'home' && seqPhase === 'load'
+  useEffect(() => {
+    if (!paneOn) {
+      requestBrowserPane(null)
+      return
+    }
+    const send = () => {
+      const rect = browserSlotRef.current?.getBoundingClientRect()
+      if (!rect || rect.width < 1 || rect.height < 1) return
+      requestBrowserPane({ x: rect.left, y: rect.top, w: rect.width, h: rect.height })
+    }
+    send()
+    const raf = requestAnimationFrame(send)
+    window.addEventListener('resize', send)
+    window.addEventListener('scroll', send, true)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', send)
+      window.removeEventListener('scroll', send, true)
+      requestBrowserPane(null)
+    }
+  }, [paneOn, activeTabId])
   // Home stack (brand + tiles) is mounted unless the park hides it.
   const stackMounted =
     seqPhase === null ||
@@ -646,6 +676,19 @@ export default function App() {
 
             {/* Sequence status line (parked under the pill). */}
             {parkWindow && statusText && <p className="seq-status">{statusText}</p>}
+
+            {/* Framed content pane: anchor for the native browser rect while
+                the sequence loads. The native webview is lifted above the
+                chrome to exactly this box; results take the same box after. */}
+            {parkWindow && (
+              <div className="browser-slot" ref={browserSlotRef} aria-hidden="true">
+                {!shellMode && seqPhase === 'load' && (
+                  <p className="browser-slot__hint">
+                    The live page renders here inside the app.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Choreographed results: formats, CTA, errors, dev stub. */}
             {(seqPhase === 'done' || seqPhase === 'error' || seqPhase === 'rdown') && (

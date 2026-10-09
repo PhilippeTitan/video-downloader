@@ -106,6 +106,20 @@ export function requestReload(): boolean {
   return sendNativeAction('reload')
 }
 
+export interface BrowserPaneRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** Frame the browsing WebView INSIDE the chrome: lift it above the UI to
+ *  this rect of the viewport (Safari-style content pane), or pass null to
+ *  drop it back fullscreen behind the chrome. */
+export function requestBrowserPane(rect: BrowserPaneRect | null): boolean {
+  return sendNativeAction('browserPane', rect ?? undefined)
+}
+
 /** Trigger iOS system share sheet for a completed file (Q042). */
 export function requestShareFile(filePath: string, title?: string): boolean {
   return sendNativeAction('shareFile', { filePath, title })
