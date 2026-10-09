@@ -1,5 +1,12 @@
 #import "BrowserViewController.h"
 
+// Header-visibility workaround: some SDK/clang combos don't surface this
+// selector even though it exists at runtime since iOS 11.
+@interface WKWebViewConfiguration (VDSchemeHandler)
+- (void)setURLSchemeHandler:(nullable id<WKURLSchemeHandler>)urlSchemeHandler
+                   forScheme:(NSString *)scheme;
+@end
+
 static NSString *const kVDHandler = @"vd";
 static NSString *const kVDScheme = @"vdapp";
 static const NSInteger kMaxTabs = 10;          // Q016
