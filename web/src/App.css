@@ -1360,11 +1360,12 @@ body.is-browsing {
 }
 
 .tab-strip__scroll {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   overflow-x: auto;
-  padding-bottom: 4px;
+  padding: 0 8px 4px;
   scrollbar-width: none;
 }
 
@@ -1386,6 +1387,20 @@ body.is-browsing {
   white-space: nowrap;
   max-width: 140px;
   transition: all 0.2s ease;
+  /* Horizontal drags belong to swipe-to-close; the row still pans vertically. */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Swipe-to-close: raw drag position (no easing) until release. */
+.tab-strip__tab--dragging {
+  transition: none;
+  will-change: transform, opacity;
+}
+
+.tab-strip__tab--snapping {
+  transition: transform 0.22s ease, opacity 0.22s ease;
 }
 
 .tab-strip__tab--active {
@@ -1424,6 +1439,47 @@ body.is-browsing {
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
+}
+
+/* Long-press context menu (Q058): transparent catcher + pill popover. */
+.tab-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+}
+
+.tab-menu {
+  position: fixed;
+  z-index: 6;
+  width: 150px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  animation: vdpop 0.18s ease both;
+}
+
+.tab-menu__item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 10px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tab-menu__item:active {
+  background: var(--tint);
 }
 
 /* ------------------------------------------------------ clipboard-banner */

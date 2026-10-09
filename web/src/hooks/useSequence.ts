@@ -61,7 +61,7 @@ export interface SequenceApi {
   stageRef: RefObject<HTMLDivElement | null>
   launch: (text: string) => void
   submit: (text: string, nav?: boolean) => void
-  reload: (text: string) => void
+  reload: (text: string, nav?: boolean) => void
   retry: () => void
   notifyAnalyzeDone: (ok: boolean) => void
   dismiss: () => void
@@ -320,11 +320,14 @@ export function useSequence(options: SequenceOptions): SequenceApi {
     [begin],
   )
 
-  /** Parked (done/error) → load: re-run the lookup without a new flight. */
+  /** Parked (done/error) → load: re-run the lookup without a new flight.
+   *  nav overrides the session flag (false = refresh/tab already loaded —
+   *  re-read the page instead of navigating again). */
   const reload = useCallback(
-    (text: string) => {
+    (text: string, nav?: boolean) => {
       if (phaseRef.current !== 'done' && phaseRef.current !== 'error') return
       textRef.current = text
+      if (nav !== undefined) navRef.current = nav
       if (reduced()) {
         optionsRef.current.onScanStart?.(text, navRef.current)
         loadAtRef.current = Date.now()

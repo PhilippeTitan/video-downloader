@@ -9,6 +9,7 @@ import {
   requestSwitchTab,
   requestCloseTab,
   requestNewTab,
+  requestReload,
   requestShareFile,
   requestClearBrowsingData,
   requestExportAll,
@@ -442,6 +443,16 @@ export default function App() {
     requestNewTab()
   }
 
+  // Long-press menu "Refresh" (Q058): reload the active tab's page natively
+  // and re-run the lookup without a fresh flight (nav=false).
+  const handleRefreshTab = (id: string) => {
+    if (id !== activeTabId) return
+    const targetTab = browserTabs.find((t) => t.id === id)
+    if (!targetTab?.url) return
+    requestReload()
+    seq.reload(targetTab.url, false)
+  }
+
   const shellMode = hasNativeShell()
   const seqPhase = seq.phase
   const homePillVisible = tab === 'home'
@@ -604,6 +615,7 @@ export default function App() {
                 onSelectTab={handleSelectTab}
                 onCloseTab={handleCloseTab}
                 onNewTab={handleNewTab}
+                onRefreshTab={handleRefreshTab}
               />
             )}
 

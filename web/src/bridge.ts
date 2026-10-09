@@ -101,6 +101,11 @@ export function requestNewTab(): boolean {
   return sendNativeAction('newTab')
 }
 
+/** Ask the shell to reload the active browsing tab (Q058 refresh). */
+export function requestReload(): boolean {
+  return sendNativeAction('reload')
+}
+
 /** Trigger iOS system share sheet for a completed file (Q042). */
 export function requestShareFile(filePath: string, title?: string): boolean {
   return sendNativeAction('shareFile', { filePath, title })
