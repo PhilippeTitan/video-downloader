@@ -1,4 +1,4 @@
-# The Maurinex Product Discovery Engine
+ # The Maurinex Product Discovery Engine
 > **A Drop-In Autonomous Q&A Protocol for AI Coding Agents**  
 > *Tested across 500+ decisions in MaurMaket with Codex & Gemini.*
 

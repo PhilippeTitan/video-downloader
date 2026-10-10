@@ -155,16 +155,40 @@ export function requestGoForward(): boolean {
   return sendNativeAction('goForward')
 }
 
+/** Page-load lifecycle of the active browsing tab (drives the sequence's
+ *  load -> done gate: the page is revealed once it has loaded). */
+export interface PageLoadEvent {
+  tabIndex: number
+  state: 'start' | 'end' | 'error'
+  url?: string
+  message?: string
+}
+
+/** Subscribe to browsing-WebView page-load events. Returns unsubscribe. */
+export function onPageLoad(handler: (event: PageLoadEvent) => void): () => void {
+  const listener = (event: MessageEvent<unknown>) => {
+    if (isNativeEnvelope(event.data) && event.data.type === 'pageLoad') {
+      const payload = event.data.payload as PageLoadEvent | undefined
+      if (payload && typeof payload.tabIndex === 'number') handler(payload)
+    }
+  }
+  window.addEventListener('message', listener)
+  return () => window.removeEventListener('message', listener)
+}
+
 export interface BrowserPaneRect {
   x: number
   y: number
   w: number
   h: number
+  /** false = positioned but invisible (page loads hidden); true = revealed. */
+  visible: boolean
 }
 
-/** Frame the browsing WebView INSIDE the chrome: lift it above the UI to
- *  this rect of the viewport (Safari-style content pane), or pass null to
- *  drop it back fullscreen behind the chrome. */
+/** Place the browsing WebView INSIDE the app layout at this rect (the
+ *  `.browser-slot` box). With `visible: false` it loads hidden; with
+ *  `visible: true` the shell reveals it (fade + short slide). Pass null to
+ *  hide the browser entirely (home / idle: only the UI is visible). */
 export function requestBrowserPane(rect: BrowserPaneRect | null): boolean {
   return sendNativeAction('browserPane', rect ?? undefined)
 }

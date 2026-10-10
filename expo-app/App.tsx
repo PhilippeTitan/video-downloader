@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { WebViewMessageEvent, WebViewNavigation } from 'react-native-webview';
 import { WEB_HTML } from './webBundle';
@@ -38,6 +38,8 @@ interface PaneRect {
   y: number;
   w: number;
   h: number;
+  /** false = placed but invisible (page loads hidden); true = revealed. */
+  visible?: boolean;
 }
 
 /** Injected into every browsing page: sniff <video> srcs and .m3u8 traffic. */
@@ -113,6 +115,19 @@ export default function App() {
   const [tabs, setTabs] = useState<ShellTab[]>([{ id: 'tab-1', url: '', title: 'Start' }]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [pane, setPane] = useState<PaneRect | null>(null);
+
+  // The browser is invisible until the UI reveals it inside its slot
+  // (fade + 16px slide, matching the design's `done` phase), and fades out
+  // again on the return sweep.
+  const paneVisible = !!pane?.visible;
+  const reveal = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(reveal, {
+      toValue: paneVisible ? 1 : 0,
+      duration: paneVisible ? 350 : 220,
+      useNativeDriver: true,
+    }).start();
+  }, [paneVisible, reveal]);
 
   const activeTab = tabs[activeIndex] ?? tabs[0];
   const activeHistory = activeTab ? historiesRef.current[activeTab.id] : undefined;
@@ -313,34 +328,7 @@ export default function App() {
     <View style={styles.container}>
       <StatusBar style="light" />
 
-      {/* Browsing WebView — fullscreen behind the chrome, or lifted into the
-          framed slot rect while the sequence loads (Safari-style pane). */}
-      {browserSource && (
-        <WebView
-          key={activeTab.id}
-          ref={browserRef}
-          source={browserSource}
-          originWhitelist={['*']}
-          userAgent={SAFARI_UA}
-          injectedJavaScript={SNIFFER_JS}
-          onMessage={handleBrowserMessage}
-          onNavigationStateChange={handleBrowserNav}
-          javaScriptEnabled
-          domStorageEnabled
-          allowsInlineMediaPlayback
-          setSupportMultipleWindows={false}
-          style={
-            pane
-              ? [
-                  styles.browser,
-                  { left: pane.x, top: pane.y, width: pane.w, height: pane.h },
-                ]
-              : [styles.browser, styles.browserFullscreen]
-          }
-        />
-      )}
-
-      {/* UI chrome WebView — always on top. */}
+      {/* UI chrome WebView — the whole app UI. */}
       <WebView
         ref={uiRef}
         originWhitelist={['*']}
@@ -352,6 +340,55 @@ export default function App() {
         setSupportMultipleWindows={false}
         style={styles.web}
       />
+
+      {/* Browsing WebView — drawn above the UI but confined to the slot rect
+          the UI reports, so the page sits INSIDE the layout under the top
+          bar and stays touchable. Invisible (and untouchable) until the UI
+          reveals it; hidden entirely on home. */}
+      {browserSource && (
+        <Animated.View
+          pointerEvents={paneVisible ? 'auto' : 'none'}
+          style={[
+            styles.browser,
+            pane
+              ? { left: pane.x, top: pane.y, width: pane.w, height: pane.h }
+              : styles.browserHidden,
+            {
+              opacity: reveal,
+              transform: [
+                { translateY: reveal.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
+              ],
+            },
+          ]}
+        >
+          <WebView
+            key={activeTab.id}
+            ref={browserRef}
+            source={browserSource}
+            originWhitelist={['*']}
+            userAgent={SAFARI_UA}
+            injectedJavaScript={SNIFFER_JS}
+            onMessage={handleBrowserMessage}
+            onNavigationStateChange={handleBrowserNav}
+            onLoadStart={() =>
+              relayToUi('pageLoad', { tabIndex: activeIndex, state: 'start' })
+            }
+            onLoadEnd={() => relayToUi('pageLoad', { tabIndex: activeIndex, state: 'end' })}
+            onError={(e) =>
+              relayToUi('pageLoad', {
+                tabIndex: activeIndex,
+                state: 'error',
+                message: e.nativeEvent.description || 'Couldn\u2019t load that page',
+              })
+            }
+            javaScriptEnabled
+            domStorageEnabled
+            allowsInlineMediaPlayback
+            setSupportMultipleWindows={false}
+            style={styles.browserWeb}
+          />
+        </Animated.View>
+      )}
     </View>
   );
 }
@@ -364,12 +401,18 @@ const styles = StyleSheet.create({
   browser: {
     position: 'absolute',
     backgroundColor: '#0e0f14',
+    borderRadius: 18,
+    overflow: 'hidden',
   },
-  browserFullscreen: {
+  browserHidden: {
     left: 0,
     top: 0,
     right: 0,
     bottom: 0,
+  },
+  browserWeb: {
+    flex: 1,
+    backgroundColor: '#0e0f14',
   },
   web: {
     backgroundColor: 'transparent',

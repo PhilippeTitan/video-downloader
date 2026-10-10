@@ -24,6 +24,9 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
 // Framed browsing pane helpers — implemented below, called from the tab code.
 - (void)resetPaneForWebView:(WKWebView *)web;
 - (void)applyBrowserPane:(NSDictionary *)payload;
+- (void)setPaneVisible:(BOOL)visible onWebView:(WKWebView *)web animated:(BOOL)animated;
+// YES while the placed pane is revealed to the user (fade-in done, not yet faded).
+@property (nonatomic, assign) BOOL paneRevealed;
 @end
 
 @implementation BrowserViewController
@@ -238,6 +241,45 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     web.layer.cornerRadius = 0;
     web.layer.masksToBounds = NO;
+    // Fullscreen behind the chrome: visible, untransformed, touchable.
+    self.paneRevealed = NO;
+    [web.layer removeAllAnimations];
+    web.alpha = 1.0;
+    web.transform = CGAffineTransformIdentity;
+    web.userInteractionEnabled = YES;
+}
+
+/**
+ * Reveal/hide the placed pane, mirroring the UI's animation (fade + 16pt
+ * slide-in, 350 ms in / 220 ms out). The page keeps loading while hidden —
+ * alpha, not `hidden`, so WebKit never suspends rendering.
+ */
+- (void)setPaneVisible:(BOOL)visible onWebView:(WKWebView *)web animated:(BOOL)animated {
+    if (!web) return;
+    if (self.paneRevealed == visible) {
+        // Already there: pin the resting state (mid-flight frame changes can't drift).
+        web.alpha = visible ? 1.0 : 0.0;
+        web.hidden = NO;
+        return;
+    }
+    self.paneRevealed = visible;
+    web.hidden = NO;
+    web.userInteractionEnabled = visible;
+    if (!animated) {
+        [web.layer removeAllAnimations];
+        web.alpha = visible ? 1.0 : 0.0;
+        web.transform = visible ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 16);
+        return;
+    }
+    // Start from the far end so the slide always reads as motion.
+    web.transform = visible ? CGAffineTransformMakeTranslation(0, 16) : CGAffineTransformIdentity;
+    [UIView animateWithDuration:(visible ? 0.35 : 0.22)
+                          delay:0
+                        options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        web.alpha = visible ? 1.0 : 0.0;
+        web.transform = visible ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 16);
+    } completion:nil];
 }
 
 /**
@@ -271,12 +313,74 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
         return;
     }
 
+    // `visible` false = placed but hidden (page loads behind the animation);
+    // missing = legacy UI, which always wanted the pane shown.
+    BOOL visible = ![payload[@"visible"] isKindOfClass:NSNumber.class]
+        || [payload[@"visible"] boolValue];
+
     web.autoresizingMask = UIViewAutoresizingNone;
     web.layer.cornerRadius = 18;
     web.layer.masksToBounds = YES;
     if (web.superview != self.view) [self.view addSubview:web];
     [self.view bringSubviewToFront:web]; // over the chrome, confined to the slot
     web.frame = CGRectMake(x.doubleValue, y.doubleValue, w.doubleValue, h.doubleValue);
+    [self setPaneVisible:visible onWebView:web animated:YES];
+}
+
+#pragma mark - Page-load relay (drives the UI's load -> done gate)
+
+/** Tell the chrome this browsing tab changed load state. */
+- (void)relayPageLoadState:(NSString *)state
+                       url:(NSString *)url
+                   message:(NSString *)message {
+    NSMutableDictionary *payload = [NSMutableDictionary dictionary];
+    payload[@"tabIndex"] = @(self.activeTabIndex);
+    payload[@"state"] = state;
+    if (url.length) payload[@"url"] = url;
+    if (message.length) payload[@"message"] = message;
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"pageLoad",
+        @"payload": payload,
+    }];
+}
+
+/** Only the visible tab's loads matter; about:blank is the shell's own
+ *  placeholder and must not flip the UI's gate before a search starts. */
+- (BOOL)shouldRelayLoadForWebView:(WKWebView *)webView {
+    if (webView != [self activeTab]) return NO;
+    NSString *url = webView.URL.absoluteString;
+    return !(url.length == 0 || [url isEqualToString:@"about:blank"]);
+}
+
+- (void)webView:(WKWebView *)webView didStartProvisionalNavigation:(WKNavigation *)navigation {
+    if (![self shouldRelayLoadForWebView:webView]) return;
+    [self relayPageLoadState:@"start" url:webView.URL.absoluteString message:nil];
+}
+
+- (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    if (![self shouldRelayLoadForWebView:webView]) return;
+    [self relayPageLoadState:@"end" url:webView.URL.absoluteString message:nil];
+}
+
+- (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation
+      withError:(NSError *)error {
+    [self relayLoadFailure:error forWebView:webView];
+}
+
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation
+      withError:(NSError *)error {
+    [self relayLoadFailure:error forWebView:webView];
+}
+
+/** Cancelled (-999) is not a failure — it fires on redirects, stop, and on
+ *  every superseded provisional load (meta-refresh pages hit it constantly). */
+- (void)relayLoadFailure:(NSError *)error forWebView:(WKWebView *)webView {
+    if (![self shouldRelayLoadForWebView:webView]) return;
+    if (error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled) return;
+    [self relayPageLoadState:@"error"
+                         url:webView.URL.absoluteString
+                     message:error.localizedDescription];
 }
 
 #pragma mark - Storage & Downloads (Q013, Q020, Q031, Q042, Q070)

@@ -1,153 +1,25 @@
+/* Blank UI base.
+ *
+ * The design tokens and chrome styles went with the UI. What is left is only
+ * what a blank page needs to stay invisible: a transparent document, so the
+ * native shell's browsing WebView behind the chrome is what you see — the
+ * loading state from before the UI existed.
+ */
 :root {
   color-scheme: dark;
-
-  --bg: #0e0f14;
-  --surface: #181a22;
-  --surface-2: #1f2230;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --text: #e8eaf0;
-  --muted: #9aa3b2;
-  --accent: #7c5cff;
-  --accent-soft: rgba(124, 92, 255, 0.16);
-  --ok: #3ecf8e;
-  --warn: #f5b84a;
-  --err: #ff7a9c;
-
-  /* Chrome surfaces from the Gen-2 design tokens. */
-  --field: #1d2029;
-  --field-2: #2a2e3f;
-  --chip: #232736;
-  --panel: #161821;
-  --dashed: #4a5068;
-  --divider: #2d3144;
-  --tint: #2d2a55;
-  --tint-deep: #171326;
-  --tint-active: #3a2f78;
-  --ink-active: #d7ccff;
-  --accent-light: #b7a6ff;
-
-  --radius: 16px;
-  --radius-sm: 11px;
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-
-  /* Floating-element clearances. --nav-total is what bottom floats clear.
-     The bottom nav is gone (left rail instead), so --nav-bar stays 0. */
-  --nav-bar: 0px;
-  --nav-inset: env(safe-area-inset-bottom, 0px);
-  --nav-bottom-gap: 0px;
-  --nav-total: calc(var(--nav-bar) + var(--nav-inset) + var(--nav-bottom-gap));
-
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
-    system-ui, sans-serif;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-[data-theme="light"] {
-  color-scheme: light;
-  --bg: #f8f9fc;
-  --surface: #ffffff;
-  --surface-2: #f0f2f7;
-  --border: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.15);
-  --text: #0f172a;
-  --muted: #64748b;
-  --accent: #5b4cf0;
-  --accent-soft: rgba(91, 76, 240, 0.12);
-  --ok: #0d9668;
-  --warn: #c2840a;
-  --err: #e0476f;
-  --field: #eef1f7;
-  --field-2: #ffffff;
-  --chip: #e7eaf2;
-  --panel: #ffffff;
-  --dashed: #b6bdcd;
-  --divider: rgba(15, 23, 42, 0.1);
-  --tint: rgba(124, 92, 255, 0.12);
-  --tint-deep: rgba(124, 92, 255, 0.07);
-  --tint-active: rgba(124, 92, 255, 0.2);
-  --ink-active: #4b3fd0;
-  --accent-light: #6d5efc;
-}
-
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    color-scheme: light;
-    --bg: #f8f9fc;
-    --surface: #ffffff;
-    --surface-2: #f0f2f7;
-    --border: rgba(0, 0, 0, 0.08);
-    --border-strong: rgba(0, 0, 0, 0.15);
-    --text: #0f172a;
-    --muted: #64748b;
-    --accent: #5b4cf0;
-    --accent-soft: rgba(91, 76, 240, 0.12);
-    --ok: #0d9668;
-    --warn: #c2840a;
-    --err: #e0476f;
-    --field: #eef1f7;
-    --field-2: #ffffff;
-    --chip: #e7eaf2;
-    --panel: #ffffff;
-    --dashed: #b6bdcd;
-    --divider: rgba(15, 23, 42, 0.1);
-    --tint: rgba(124, 92, 255, 0.12);
-    --tint-deep: rgba(124, 92, 255, 0.07);
-    --tint-active: rgba(124, 92, 255, 0.2);
-    --ink-active: #4b3fd0;
-    --accent-light: #6d5efc;
-  }
-}
-
-* {
-  box-sizing: border-box;
 }
 
 html,
 body,
 #root {
+  margin: 0;
   min-height: 100%;
+  background: transparent;
 }
 
 body {
-  margin: 0;
-  color: var(--text);
-  background-color: var(--bg);
-  background-attachment: fixed;
-}
-
-button,
-input,
-textarea {
-  font: inherit;
-  color: inherit;
-}
-
-button {
-  cursor: pointer;
-}
-
-button:disabled {
-  cursor: not-allowed;
-}
-
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
-
-ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
 }
