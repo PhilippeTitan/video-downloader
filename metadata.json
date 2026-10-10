@@ -1,0 +1,8 @@
+{
+  "name": "Video Downloader",
+  "description": "On-device video downloader with multi-tab browsing, universal media detection, download manager, and in-app library.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

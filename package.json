@@ -1,0 +1,14 @@
+{
+  "name": "video-downloader",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=web -- --host 0.0.0.0 --port 3000",
+    "build": "npm run build --workspace=web",
+    "lint": "npm run lint --workspace=web"
+  }
+}

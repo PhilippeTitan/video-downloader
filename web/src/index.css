@@ -1,25 +1,116 @@
-/* Blank UI base.
- *
- * The design tokens and chrome styles went with the UI. What is left is only
- * what a blank page needs to stay invisible: a transparent document, so the
- * native shell's browsing WebView behind the chrome is what you see — the
- * loading state from before the UI existed.
- */
-:root {
-  color-scheme: dark;
-}
+/* Video Downloader — iPad Portrait UI Stylesheet */
 
-html,
-body,
-#root {
+html, body {
   margin: 0;
-  min-height: 100%;
-  background: transparent;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #111217;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #e8eaf0;
+  -webkit-font-smoothing: antialiased;
 }
 
-body {
-  -webkit-user-select: none;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-  overscroll-behavior: none;
+#root {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: 0;
+  outline: none;
+  background: none;
+  padding: 0;
+}
+
+input {
+  font-family: inherit;
+  outline: none;
+}
+
+input:focus-visible {
+  outline: 2px solid #b7a6ff;
+  outline-offset: 2px;
+}
+
+button:focus-visible {
+  outline: 2px solid #b7a6ff;
+  outline-offset: 2px;
+}
+
+@keyframes vdl {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes vdr {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
+
+.vdl {
+  animation: vdl 26s linear infinite;
+}
+
+.vdr {
+  animation: vdr 32s linear infinite;
+}
+
+@keyframes vdup {
+  from { transform: translateY(48px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes vdpop {
+  from { opacity: 0; transform: translateY(14px) scale(.96); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes vdsh {
+  from { background-position: 0 0; }
+  to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.ipad-viewport-wrapper {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #111217;
+  position: relative;
+}
+
+.ipad-scaler {
+  transform-origin: center center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }

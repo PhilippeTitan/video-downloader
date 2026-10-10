@@ -187,6 +187,27 @@ export class LocalEngine implements ApiClient {
   }
 
   async analyze(url: string): Promise<VideoInfo> {
+    try {
+      const res = await fetch(`/api/analyze?url=${encodeURIComponent(url)}`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data && data.formats) {
+          return {
+            id: `info-${Date.now()}`,
+            url,
+            title: data.title || titleFromUrl(url),
+            thumbnailUrl: data.thumbnail,
+            durationSec: data.durationSec,
+            uploader: 'Web Source',
+            extractor: 'backend-extractor',
+            formats: data.formats,
+          }
+        }
+      }
+    } catch {
+      /* fallback to local analysis below */
+    }
+
     const title = titleFromUrl(url)
     const isAudioOnly = url.endsWith('.m4a') || url.endsWith('.mp3')
     const isDirectVideo = url.endsWith('.mp4') || url.endsWith('.mov')

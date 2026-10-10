@@ -1,28 +1,31 @@
 import react from '@vitejs/plugin-react'
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
+import { handleApiMiddleware } from './server/api.ts'
 
-// https://vite.dev/config/
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), '')
-  // Where the local downloader service is expected to listen.
-  const backend = env.VITE_DEV_BACKEND ?? 'http://127.0.0.1:8000'
-
+function apiBackendPlugin(): Plugin {
   return {
-    // Relative asset paths so the bundle loads from file:// inside the iOS shell.
-    base: './',
-    plugins: [react()],
-    server: {
-      host: '127.0.0.1',
-      port: 5173,
-      strictPort: false,
-      // Lets the UI call "/api/..." in dev without CORS setup.
-      proxy: {
-        '/api': {
-          target: backend,
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, ''),
-        },
-      },
+    name: 'api-backend',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        handleApiMiddleware(req, res, next)
+      })
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => {
+        handleApiMiddleware(req, res, next)
+      })
     },
   }
+}
+
+// https://vite.dev/config/
+export default defineConfig({
+  base: './',
+  plugins: [react(), apiBackendPlugin()],
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+    strictPort: true,
+    allowedHosts: true,
+  },
 })
