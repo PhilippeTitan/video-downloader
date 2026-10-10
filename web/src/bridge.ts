@@ -48,6 +48,28 @@ export function onDetection(handler: (event: DetectionEvent) => void): () => voi
   return () => window.removeEventListener('message', listener)
 }
 
+export interface NavStateEvent {
+  /** Index of the browsing tab this state belongs to (web tab order). */
+  tabIndex: number
+  url: string
+  title?: string
+  canGoBack: boolean
+  canGoForward: boolean
+}
+
+/** Subscribe to browsing-WebView navigation state (back/forward enablement
+ *  + live URL/title per tab). Returns unsubscribe. */
+export function onNavState(handler: (event: NavStateEvent) => void): () => void {
+  const listener = (event: MessageEvent<unknown>) => {
+    if (isNativeEnvelope(event.data) && event.data.type === 'navState') {
+      const payload = event.data.payload as NavStateEvent | undefined
+      if (payload && typeof payload.tabIndex === 'number') handler(payload)
+    }
+  }
+  window.addEventListener('message', listener)
+  return () => window.removeEventListener('message', listener)
+}
+
 /* ------------------------------------------------------------------ *
  * UI -> Shell Bridge Messages
  * ------------------------------------------------------------------ */
@@ -60,11 +82,19 @@ interface ShellWindow {
   webkit?: { messageHandlers?: { vd?: Partial<VkHandler> } }
 }
 
+interface RnWindow {
+  ReactNativeWebView?: { postMessage?: (message: string) => void }
+}
+
 function shellHandler(): VkHandler | null {
   const handler = (window as ShellWindow).webkit?.messageHandlers?.vd
-  return handler && typeof handler.postMessage === 'function'
-    ? (handler as VkHandler)
-    : null
+  if (handler && typeof handler.postMessage === 'function') return handler as VkHandler
+  // Expo Go (react-native-webview): same envelope, JSON string over the wire.
+  const rn = (window as RnWindow).ReactNativeWebView
+  if (rn && typeof rn.postMessage === 'function') {
+    return { postMessage: (message: unknown) => rn.postMessage!(JSON.stringify(message)) }
+  }
+  return null
 }
 
 /** True when running inside the iOS shell (its WKScriptMessageHandler exists). */
@@ -101,9 +131,28 @@ export function requestNewTab(): boolean {
   return sendNativeAction('newTab')
 }
 
+/** Push the full web tab list (source of truth) to the shell so its browsing
+ *  WebView mirror can't drift after UI reloads / fast refresh. */
+export function requestSyncTabs(
+  tabs: { id: string; url: string; title?: string }[],
+  activeIndex: number,
+): boolean {
+  return sendNativeAction('syncTabs', { tabs, activeIndex })
+}
+
 /** Ask the shell to reload the active browsing tab (Q058 refresh). */
 export function requestReload(): boolean {
   return sendNativeAction('reload')
+}
+
+/** Ask the shell to go back in the active browsing tab's history. */
+export function requestGoBack(): boolean {
+  return sendNativeAction('goBack')
+}
+
+/** Ask the shell to go forward in the active browsing tab's history. */
+export function requestGoForward(): boolean {
+  return sendNativeAction('goForward')
 }
 
 export interface BrowserPaneRect {

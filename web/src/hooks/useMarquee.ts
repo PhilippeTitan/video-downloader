@@ -25,15 +25,24 @@ export function useMarquee({ speed, paused = false, idleMs = 1800 }: MarqueeOpti
   const lastXRef = useRef(0)
   const movedRef = useRef(0)
   const interactAtRef = useRef(0)
+  // Auto-scroll only while the track actually overflows its viewport —
+  // a single (or short) row sits still until it fills the line.
+  const overflowingRef = useRef(false)
 
   // Track holds two identical copies; one copy's width is the wrap span.
   useEffect(() => {
     const el = trackRef.current
     if (!el) return
-    const measure = () => setContentWidth(el.scrollWidth / 2)
+    const measure = () => {
+      const w = el.scrollWidth / 2
+      setContentWidth(w)
+      overflowingRef.current = w > (el.parentElement?.clientWidth ?? 0)
+      if (!overflowingRef.current) setOffset(0)
+    }
     measure()
     const observer = new ResizeObserver(measure)
     observer.observe(el)
+    if (el.parentElement) observer.observe(el.parentElement)
     return () => observer.disconnect()
   }, [])
 
@@ -46,7 +55,11 @@ export function useMarquee({ speed, paused = false, idleMs = 1800 }: MarqueeOpti
     const step = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
-      if (!draggingRef.current && now - interactAtRef.current > idleMs) {
+      if (
+        overflowingRef.current &&
+        !draggingRef.current &&
+        now - interactAtRef.current > idleMs
+      ) {
         setOffset((o) => o + speed * dt)
       }
       raf = requestAnimationFrame(step)

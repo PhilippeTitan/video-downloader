@@ -4,7 +4,17 @@
  */
 
 const STORAGE_KEY = 'vd-recents-v1'
+const SEEDED_KEY = 'vd-recents-v1-seeded'
 const MAX_RECENTS = 6
+
+/** First-run rows from the mockup (Main.dc.html rawRecents). */
+const SEED: string[] = [
+  'mountain road timelapse',
+  'lofi study mix',
+  'cooking tutorial',
+  'pasta recipe',
+  'how to edit a long mountain road timelapse video',
+]
 
 export function loadRecents(): string[] {
   try {
@@ -14,6 +24,11 @@ export function loadRecents(): string[] {
       if (Array.isArray(parsed)) {
         return parsed.filter((x): x is string => typeof x === 'string').slice(0, MAX_RECENTS)
       }
+    }
+    if (!localStorage.getItem(SEEDED_KEY)) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(SEED))
+      localStorage.setItem(SEEDED_KEY, '1')
+      return [...SEED]
     }
   } catch {
     /* corrupt payload */

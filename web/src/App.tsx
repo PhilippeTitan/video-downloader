@@ -4,20 +4,24 @@ import { connect } from './api'
 import type { ApiClient, ApiMode } from './api'
 import {
   onDetection,
+  onNavState,
   hasNativeShell,
   requestNavigation,
   requestSwitchTab,
   requestCloseTab,
   requestNewTab,
-  requestReload,
+  requestSyncTabs,
+  requestGoBack,
+  requestGoForward,
   requestBrowserPane,
   requestShareFile,
   requestClearBrowsingData,
   requestExportAll,
 } from './bridge'
 import { BottomStrip } from './components/BottomStrip'
+import { BrowseChrome } from './components/BrowseChrome'
 import { DownloadPill } from './components/DownloadPill'
-import { AlertIcon } from './components/Icons'
+import { AlertIcon, MenuIcon, PlusIcon, TabsIcon } from './components/Icons'
 import { HomeHero } from './components/HomeHero'
 import { MediaPlayerModal } from './components/MediaPlayerModal'
 import { ModeChip } from './components/ModeChip'
@@ -25,7 +29,7 @@ import { NavRail } from './components/NavRail'
 import { ResultsPanel } from './components/ResultsPanel'
 import { SearchBar } from './components/SearchBar'
 import { SettingsPanel } from './components/SettingsPanel'
-import { TabBar } from './components/TabBar'
+import { TabSwitcher } from './components/TabSwitcher'
 import { loadFavorites } from './favorites'
 import type { Favorite } from './favorites'
 import { defaultFormatId, normalizeUrl, resolutionLabel, toNavigationTarget } from './format'
@@ -84,6 +88,11 @@ export default function App() {
   // Multi-tab state (Q010, Q016, Q046, Q058)
   const [browserTabs, setBrowserTabs] = useState<BrowserTab[]>(loadSavedTabs)
   const [activeTabId, setActiveTabId] = useState<string>(() => loadSavedTabs()[0]?.id || 'tab-1')
+  // Browse-chrome switcher overlay (mockup 176–202).
+  const [tabSwitcherOpen, setTabSwitcherOpen] = useState(false)
+  // Back/forward enablement from the shell's browsing WebView (mockup 136–139).
+  const [navBack, setNavBack] = useState(false)
+  const [navFwd, setNavFwd] = useState(false)
 
   // Theme state (Q037, Q043, Q093)
   const [theme, setTheme] = useState<Theme>(() => {
@@ -123,7 +132,11 @@ export default function App() {
       analyzeSeq.current += 1
       setAnalyzing(false)
     },
-    onIdle: () => resetSearch(),
+    onIdle: () => {
+      setNavBack(false)
+      setNavFwd(false)
+      resetSearch()
+    },
   })
 
   // Analyze gate: park the sequence when the real lookup settles. In the
@@ -445,14 +458,16 @@ export default function App() {
     requestNewTab()
   }
 
-  // Long-press menu "Refresh" (Q058): reload the active tab's page natively
-  // and re-run the lookup without a fresh flight (nav=false).
-  const handleRefreshTab = (id: string) => {
-    if (id !== activeTabId) return
-    const targetTab = browserTabs.find((t) => t.id === id)
-    if (!targetTab?.url) return
-    requestReload()
-    seq.reload(targetTab.url, false)
+  // Back (mockup 136): inside a shell history step when possible, else the
+  // sequence dismisses and the session returns home. Forward only when the
+  // shell reports history ahead of the current page.
+  const handleBack = () => {
+    if (navBack && requestGoBack()) return
+    seq.dismiss()
+  }
+
+  const handleForward = () => {
+    if (navFwd) requestGoForward()
   }
 
   const shellMode = hasNativeShell()
@@ -488,6 +503,31 @@ export default function App() {
       requestBrowserPane(null)
     }
   }, [paneOn, activeTabId])
+
+  // Shell navigation state → chevron enablement + live tab titles.
+  useEffect(() => {
+    if (!shellMode) return
+    return onNavState((event) => {
+      setNavBack(event.canGoBack)
+      setNavFwd(event.canGoForward)
+      if (event.title) {
+        setBrowserTabs((prev) => {
+          const tab = prev[event.tabIndex]
+          if (!tab || tab.title === event.title) return prev
+          return prev.map((t, i) => (i === event.tabIndex ? { ...t, title: event.title! } : t))
+        })
+      }
+    })
+  }, [shellMode])
+
+  // Web owns tab ordering; push the full list so the shell's browsing
+  // WebView mirror can't drift after UI reloads / fast refresh.
+  useEffect(() => {
+    if (!shellMode) return
+    const index = browserTabs.findIndex((t) => t.id === activeTabId)
+    requestSyncTabs(browserTabs, Math.max(0, index))
+  }, [shellMode, browserTabs, activeTabId])
+
   // Home stack (brand + tiles) is mounted unless the park hides it.
   const stackMounted =
     seqPhase === null ||
@@ -579,11 +619,6 @@ export default function App() {
     .map((j) => j.id)
   const pausedIds = downloads.jobs.filter((j) => j.status === 'paused').map((j) => j.id)
 
-  const hasFailed = downloads.jobs.some((j) => j.status === 'error')
-  const libNewDot = downloads.jobs.some(
-    (j) => j.status === 'complete' && !j.playedAt && !j.isPrivate,
-  )
-
   // Auto-clear the library pulse after it plays once (D020 re-entry guard)
   useEffect(() => {
     if (!pulseJobId) return
@@ -600,9 +635,51 @@ export default function App() {
           setTab(next)
         }}
         activeCount={downloads.active.length}
-        hasFailed={hasFailed}
-        libNewDot={libNewDot}
       />
+
+      {/* Top-left hamburger (mockup): idle-home menu entry → Settings. */}
+      {tab === 'home' && (
+        <button type="button" className="menu-btn" aria-label="Menu" onClick={() => setTab('settings')}>
+          <MenuIcon width={32} height={32} />
+        </button>
+      )}
+
+      {/* Top-right +/tabs cluster (mockup 140–143) — browse session only. */}
+      {tab === 'home' && parkWindow && (
+        <div className="browse-cluster">
+          <button
+            type="button"
+            className="browse-cluster__btn"
+            aria-label="New tab"
+            onClick={handleNewTab}
+          >
+            <PlusIcon width={34} height={34} />
+          </button>
+          <button
+            type="button"
+            className="browse-cluster__btn browse-cluster__btn--tabs"
+            aria-label="Show tabs"
+            onClick={() => setTabSwitcherOpen(true)}
+          >
+            <TabsIcon width={32} height={32} />
+            <span className="browse-cluster__count">{browserTabs.length}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Back/forward chevrons + dual-row tab pills (mockup 136–139, 152–153)
+          — the parked session's browse chrome. */}
+      {tab === 'home' && parkWindow && (
+        <BrowseChrome
+          tabs={browserTabs}
+          activeTabId={activeTabId}
+          canGoBack={navBack}
+          canGoForward={navFwd}
+          onBack={handleBack}
+          onForward={handleForward}
+          onSelectTab={handleSelectTab}
+        />
+      )}
 
       <div
         className={`app${tab === 'downloads' || tab === 'library' ? ' app--full' : ''}${homePillVisible ? ' app--pill' : ''}`}
@@ -634,18 +711,6 @@ export default function App() {
                 onLaunchFavorite={(fav) => seq.launch(fav.url)}
                 onLaunchRecent={(text) => seq.launch(text)}
                 onFavoritesChange={setFavorites}
-              />
-            )}
-
-            {/* Multi-Tab Strip (Q010, Q016) — parked only (top park slot). */}
-            {parkWindow && (
-              <TabBar
-                tabs={browserTabs}
-                activeTabId={activeTabId}
-                onSelectTab={handleSelectTab}
-                onCloseTab={handleCloseTab}
-                onNewTab={handleNewTab}
-                onRefreshTab={handleRefreshTab}
               />
             )}
 
@@ -768,7 +833,7 @@ export default function App() {
         )}
       </main>
 
-      {tab === 'home' && homePillVisible && (
+      {tab === 'home' && homePillVisible && pillState !== 'idle' && (
         <div
           className={`pill-layer${stripVisible ? ' pill-layer--raised' : ''}${seq.flying ? ' pill-layer--seq-hidden' : ''}`}
         >
@@ -778,7 +843,6 @@ export default function App() {
             onClick={() => {
               if (pillState === 'error') seq.retry()
               else if (pillState === 'ready' && selectedFormat) void download(selectedFormat.id)
-              else if (pillState === 'idle') searchInputRef.current?.focus()
             }}
           />
         </div>
@@ -803,6 +867,21 @@ export default function App() {
           onProgress={(id, frac) => void api?.updateJob(id, { playbackProgress: frac })}
         />
       </div>
+
+      {/* Tab switcher overlay (mockup 176–202). */}
+      {tabSwitcherOpen && (
+        <TabSwitcher
+          tabs={browserTabs}
+          activeTabId={activeTabId}
+          onSelect={(id) => {
+            setTabSwitcherOpen(false)
+            handleSelectTab(id)
+          }}
+          onClose={handleCloseTab}
+          onNewTab={handleNewTab}
+          onDone={() => setTabSwitcherOpen(false)}
+        />
+      )}
 
       {/* Completion toast (D010) */}
       {toast && (

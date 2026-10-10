@@ -16,9 +16,7 @@ const base = {
 export function DownloadIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>
-      <path d="M12 3v12" />
-      <path d="m7 10 5 5 5-5" />
-      <path d="M5 20h14" />
+      <path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14" />
     </svg>
   )
 }
@@ -117,7 +115,7 @@ export function SpinnerIcon(props: IconProps) {
 export function SearchIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>
-      <circle cx="11" cy="11" r="6.5" />
+      <circle cx="11" cy="11" r="7" />
       <path d="m16 16 4 4" />
     </svg>
   )
@@ -136,8 +134,8 @@ export function HomeIcon(props: IconProps) {
 export function LibraryIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>
-      <rect x="3" y="4" width="18" height="16" rx="3" />
-      <path d="M10.5 9.5v5l4.5-2.5z" fill="currentColor" stroke="none" />
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <path d="M10 9.5v5l4.5-2.5z" />
     </svg>
   )
 }
@@ -246,6 +244,16 @@ export function PlusIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  )
+}
+
+/** Overlapping-squares "Show tabs" glyph (mockup 142). */
+export function TabsIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="7" y="3" width="14" height="14" rx="3" />
+      <rect x="3" y="7" width="14" height="14" rx="3" style={{ fill: 'var(--bg)' }} />
     </svg>
   )
 }

@@ -36,47 +36,7 @@
   min-height: 540px;
 }
 
-.hero__brand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-}
-
-.hero__mark {
-  display: grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  background: var(--accent);
-  box-shadow: 0 12px 30px rgba(124, 92, 255, 0.38);
-  flex: 0 0 auto;
-}
-
-.hero__mark-tri {
-  width: 0;
-  height: 0;
-  margin-left: 4px;
-  border-left: 16px solid #fff;
-  border-top: 9px solid transparent;
-  border-bottom: 9px solid transparent;
-}
-
-.hero__wordmark {
-  font-size: 34px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  white-space: nowrap;
-}
-
-@media (max-width: 767px) {
-  .hero__wordmark {
-    font-size: 24px;
-  }
-}
-
-/* Bottom-anchored hero stack: brand + favorites/recents (or private).
+/* Bottom-anchored hero stack: favorites/recents (or private).
    --seq-stack-op fades the whole stack back in during rfade; --seq-clip
    wipes it from the bottom as the pill flies up (prototype inset 0 0 B 0). */
 .hstack {
@@ -91,14 +51,16 @@
   pointer-events: none;
   opacity: var(--seq-stack-op, 1);
   clip-path: inset(0 0 var(--seq-clip, 0px) 0);
-  /* The stack hangs off the centred pill, so it grows upwards — on a short
-     stage (landscape, Split View, small preview) the space above the pill is
-     smaller than the stack and its top would leave the screen. Cap it to the
-     space that exists and let it scroll instead of spilling past the top. */
-  max-height: calc(50% - 60px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
+}
+
+/* Short landscape frames can't fit the full stack above the centre line —
+   scroll it there instead of letting the stack leave the screen. */
+@media (orientation: landscape) and (max-height: 860px) {
+  .hstack {
+    max-height: calc(50% - 60px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 .hstack__body {
@@ -149,15 +111,16 @@
 }
 
 /* ------------------------------------------------ sequence status line */
-/* Sits between the parked pill (top 56 + 60) and the results panel; clips
+/* Sits below the browse pill rows (mockup 152–153 end at 152); clips
    with the results wipe as the pill sweeps back down over it. */
 .seq-status {
   position: absolute;
-  top: 124px;
+  /* Under-row pills (top 116 + 34 + 6 gap) clear at 156. */
+  top: 156px;
   left: 0;
   right: 0;
   text-align: center;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--muted);
   opacity: var(--seq-res-op, 0);
   transform: translateY(var(--seq-res-y, 16px));
@@ -166,12 +129,19 @@
   animation: vdpop 0.3s var(--ease) both;
 }
 
+/* Over a live page the status needs a scrim to stay readable. */
+.is-browsing .seq-status,
+.is-browsing .results-panel {
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85);
+}
+
 /* --------------------------------------------------- sequence results */
 /* Choreographed panel (design B): reveals with the done ramp, clips away
    from the top as the pill sweeps down on return. */
 .results-panel {
   position: absolute;
-  top: 156px;
+  /* Status line sits at 156; keep a 32px gutter under it. */
+  top: 188px;
   bottom: 24px;
   left: 0;
   right: 0;
@@ -391,7 +361,6 @@
 .searchbar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 /* 60 px pill, r30, field surface — the design's bare input (section E). */
@@ -399,9 +368,8 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
   height: 60px;
-  padding: 0 8px 0 16px;
+  padding: 0 24px 0 58px;
   border-radius: 30px;
   border: 0;
   background: var(--field);
@@ -474,7 +442,9 @@
 }
 
 .searchbar__lead {
-  flex: 0 0 auto;
+  position: absolute;
+  left: 22px;
+  top: 19px;
   color: var(--muted);
 }
 
@@ -495,32 +465,6 @@
 
 .searchbar__input:focus {
   outline: none;
-}
-
-.searchbar__icon {
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  border: 0;
-  border-radius: 14px;
-  background: transparent;
-  color: var(--muted);
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-  transition: color 0.15s ease, background 0.15s ease;
-}
-
-.searchbar__icon:hover {
-  color: var(--text);
-  background: var(--chip);
-}
-
-.searchbar__hint {
-  padding-left: 14px;
-  font-size: 12px;
-  color: var(--warn);
 }
 
 /* ---------------------------------------------------------------- alerts */
@@ -1084,11 +1028,6 @@ body.is-browsing {
   backdrop-filter: blur(16px) saturate(160%);
 }
 
-.is-browsing .hero--active .hero__mark {
-  top: 10px;
-  left: 10px;
-}
-
 .is-browsing .hero--active .mode {
   top: 14px;
   right: 12px;
@@ -1284,11 +1223,6 @@ body.is-browsing {
   .fmt--active:hover {
     border-color: rgba(109, 94, 252, 0.8);
   }
-
-  .searchbar__icon:hover {
-    color: var(--muted);
-    background: transparent;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1315,14 +1249,6 @@ body.is-browsing {
        (the fixed nav rail floats over the left gutter instead). */
     padding: 22px 96px calc(var(--nav-total) + 22px) 96px;
     gap: 16px;
-  }
-
-  .searchbar__input {
-    font-size: 14px;
-  }
-
-  .hero--idle {
-    --hero-lift: min(18vh, 170px);
   }
 
   .pill-layer {
@@ -1858,98 +1784,416 @@ body.is-browsing {
 
 .rail {
   position: fixed;
-  left: calc(env(safe-area-inset-left, 0px) + 8px);
+  left: calc(env(safe-area-inset-left, 0px) + 20px);
   top: 50%;
   transform: translateY(-50%);
   z-index: 45;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  height: clamp(300px, 44vh, 430px);
-  padding: 8px 4px;
 }
 
 .rail__group {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
 }
 
 .rail__item {
   position: relative;
-  width: 50px;
-  height: 50px;
+  width: 52px;
+  height: 52px;
   display: grid;
   place-items: center;
   border: 0;
-  border-radius: 16px;
+  border-radius: 26px;
   background: transparent;
   color: var(--muted);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
-  transition: color 0.16s ease, background 0.16s ease, transform 0.16s var(--ease);
-}
-
-.rail__item:hover {
-  color: var(--text);
-  background: var(--surface-2);
-}
-
-.rail__item:active {
-  transform: scale(0.9);
+  transition: color 0.16s ease, transform 0.16s var(--ease);
 }
 
 .rail__item--active {
-  color: #d7ccff;
-  background: #3a2f78;
+  color: var(--accent-light);
+  transform: scale(1.15);
 }
 
 .rail__badge {
   position: absolute;
-  top: 3px;
-  right: 1px;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 4px;
+  top: 0;
+  right: 0;
+  min-width: 20px;
+  height: 20px;
   display: grid;
   place-items: center;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 800;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: #fff;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px var(--bg);
-  animation: vdbump 0.3s var(--ease);
-}
-
-.rail__badge--failed {
-  background: var(--err);
-}
-
-.rail__dot {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 2px var(--bg);
-  animation: vdbump 0.3s var(--ease);
+  color: #06130d;
+  background: #3ecf8e;
 }
 
 [data-theme="light"] .rail__item--active {
   color: var(--accent);
-  background: var(--accent-soft);
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) .rail__item--active {
     color: var(--accent);
-    background: var(--accent-soft);
   }
+}
+
+/* Top-left hamburger (mockup): 60×60, 32px icon, drop shadow. */
+.menu-btn {
+  position: fixed;
+  left: calc(env(safe-area-inset-left, 0px) + 20px);
+  top: calc(env(safe-area-inset-top, 0px) + 48px);
+  width: 60px;
+  height: 60px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
+  z-index: 45;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Top-right +/tabs cluster (mockup 140–143): 60×60 buttons, 6px gap,
+   drop shadow; the tabs button carries the live tab-count badge. */
+.browse-cluster {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 20px);
+  top: calc(env(safe-area-inset-top, 0px) + 48px);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 45;
+}
+
+.browse-cluster__btn {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.browse-cluster__count {
+  position: absolute;
+  left: 19px;
+  top: 25px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------- tab switcher */
+/* Fullscreen blurred overlay (mockup 176–202). */
+.tabsw {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  padding: calc(env(safe-area-inset-top, 0px) + 28px) 28px 0;
+  background: rgba(10, 11, 16, 0.72);
+  -webkit-backdrop-filter: blur(22px);
+  backdrop-filter: blur(22px);
+}
+
+.tabsw__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.tabsw__title {
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.tabsw__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tabsw__plus {
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  border: 0;
+  background: var(--chip);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tabsw__done {
+  min-height: 48px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--accent-light);
+  font-size: 17px;
+  font-weight: 600;
+  font-family: inherit;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tabsw__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 24px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tabsw__grid {
+  width: 100%;
+  max-width: 736px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+/* Dashed "new tab" card (mockup 189). */
+.tabsw__new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 480px;
+  box-sizing: border-box;
+  border: 2px dashed var(--dashed);
+  border-radius: 20px;
+  background: none;
+  color: var(--accent-light);
+  font-size: 96px;
+  font-weight: 300;
+  line-height: 1;
+  font-family: inherit;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tabsw__card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tabsw__preview {
+  position: relative;
+  border-radius: 20px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.tabsw__shot {
+  display: block;
+  width: 100%;
+  height: 480px;
+  padding: 0;
+  border: 0;
+  background: linear-gradient(135deg, #34304f, #1a1c27);
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tabsw__shot--active {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.tabsw__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: 22px;
+  border: 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tabsw__meta {
+  height: 48px;
+  box-sizing: border-box;
+  padding: 10px 4px 0;
+  min-width: 0;
+}
+
+.tabsw__name {
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tabsw__sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* Short frames: shrink the preview so a card row still fits. */
+@media (max-height: 900px) {
+  .tabsw__new,
+  .tabsw__shot {
+    height: 360px;
+  }
+}
+
+/* ---------------------------------------------------------- browse chrome */
+/* Back/forward chevrons (mockup 136–139) at the exact viewport slot. */
+.browse-chevrons {
+  position: fixed;
+  left: calc(env(safe-area-inset-left, 0px) + 86px);
+  top: calc(env(safe-area-inset-top, 0px) + 48px);
+  display: flex;
+  z-index: 45;
+}
+
+.browse-chevrons__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 60px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.8));
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.browse-chevrons__btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Dual-row tab pills (mockup 152–153): tall active pill on top, smaller
+   inactive pills peeking below, edge-masked when the row overflows. Stage
+   starts clear of the chevrons (end 162) and stops before the +/tabs
+   cluster and the mode chip. */
+.browse-pills {
+  position: fixed;
+  left: calc(env(safe-area-inset-left, 0px) + 176px);
+  top: calc(env(safe-area-inset-top, 0px) + 36px);
+  width: min(492px, calc(100vw - 352px));
+  height: 110px;
+  z-index: 44;
+  pointer-events: none;
+}
+
+.browse-pills__row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+.browse-pills__row--top {
+  top: 20px;
+  gap: 8px;
+}
+
+.browse-pills__row--under {
+  top: 82px;
+  gap: 6px;
+}
+
+.browse-pills__row--masked {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+}
+
+.browse-pill {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border: 0;
+  background: #232736;
+  color: #c9cedb;
+  font-family: inherit;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.browse-pill--active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.browse-pill--top {
+  height: 44px;
+  border-radius: 22px;
+  padding: 0 14px;
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4), -6px 0 14px rgba(0, 0, 0, 0.3);
+}
+
+.browse-pill--under {
+  height: 34px;
+  border-radius: 17px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: -6px 0 12px rgba(0, 0, 0, 0.35);
+}
+
+.browse-pill__label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Phone widths: the pills row would collide with the rail/chevrons. */
+@media (max-width: 700px) {
+  .browse-pills {
+    display: none;
+  }
+}
+
+/* Parked search bar hands the top slot to the browse chrome (its jobs are
+   covered by the seq-status line + results CTA). Flight path unchanged. */
+.hero--parked .searchbar {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
 }
 
 /* ================================================== screens: shared shell */
@@ -1970,6 +2214,144 @@ body.is-browsing {
   width: 100%;
   max-width: 680px;
   margin: 0 auto;
+  /* Mockup section metrics (Main.dc.html 91/106). */
+  padding: 48px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* --------------------------------------------- stub screens (mockup 90–122) */
+
+.stub__title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+}
+
+.stub__empty {
+  margin: 0;
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.stub__list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.jobcard {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 20px;
+  background: var(--surface);
+}
+
+.jobcard__thumb {
+  flex: none;
+  width: 96px;
+  height: 64px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #34304f, #1a1c27);
+}
+
+.jobcard__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.jobcard__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  font-size: 15px;
+}
+
+.jobcard__title {
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.jobcard__status {
+  flex: none;
+  color: var(--muted);
+}
+
+.jobcard__track {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: #2b3140;
+  overflow: hidden;
+}
+
+.jobcard__fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--ok);
+  transition: width 0.3s ease;
+}
+
+.libstub__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.libcard {
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.libcard__thumb {
+  height: 150px;
+  background: linear-gradient(135deg, #34304f, #1a1c27);
+}
+
+.libcard__body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.libcard__title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.libcard__fmt {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.libcard__play {
+  margin-top: 8px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Floating action buttons top corners. */
@@ -3383,16 +3765,6 @@ body.is-browsing {
   }
 }
 
-@keyframes vdbump {
-  from {
-    opacity: 0;
-    transform: scale(0.4);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
 
 @keyframes vdtost {
   from {
@@ -3479,7 +3851,6 @@ body.is-browsing {
   font-size: 13px;
   font-weight: 600;
   color: var(--muted);
-  padding-left: 4px;
 }
 
 .marquee {
@@ -3495,10 +3866,23 @@ body.is-browsing {
   cursor: grabbing;
 }
 
+/* Favorites row: marquee (flex) + fixed dashed Add tile (mockup line 36). */
+.favrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.favrow > .marquee {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* No gap: mockup tiles are flush in a 120px period (Main.dc.html line 38),
+   which also makes the scrollWidth/2 wrap span exact. */
 .marquee__track {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
   width: max-content;
   will-change: transform;
 }
@@ -3506,12 +3890,6 @@ body.is-browsing {
 .marquee__clone {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-}
-
-.mtile-wrap {
-  position: relative;
-  flex: none;
 }
 
 .mtile {
@@ -3563,39 +3941,15 @@ body.is-browsing {
   border: 2px dashed var(--dashed);
   color: var(--accent-light);
   font-size: 28px;
+  font-weight: 400;
 }
 
 .mtile__label {
   font-size: 13px;
-  max-width: 108px;
+  max-width: 104px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.mtile__x {
-  position: absolute;
-  top: -4px;
-  right: 2px;
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 22px;
-  background: transparent;
-  color: var(--muted);
-  opacity: 0;
-  transition: opacity 0.15s ease, color 0.15s ease;
-}
-
-.mtile-wrap:hover .mtile__x,
-.mtile__x:focus-visible {
-  opacity: 1;
-}
-
-.mtile__x:hover {
-  color: var(--err);
 }
 
 /* --------------------------------------------------------- private card */
@@ -3607,10 +3961,10 @@ body.is-browsing {
   justify-content: center;
   gap: 16px;
   width: 100%;
-  min-height: 224px;
+  min-height: 284px;
   border-radius: 28px;
   background: var(--tint-deep);
-  box-shadow: inset 0 0 0 1.5px rgba(124, 92, 255, 0.45);
+  box-shadow: inset 0 0 0 1.5px #3b2f6b;
   animation: vdpop 0.42s var(--ease) both;
 }
 
@@ -3664,7 +4018,7 @@ body.is-browsing {
 .favmodal__field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .favmodal__label {
@@ -3676,7 +4030,7 @@ body.is-browsing {
   height: 52px;
   border: 0;
   border-radius: 14px;
-  background: var(--field);
+  background: var(--field-2);
   padding: 0 16px;
   font-size: 16px;
 }
@@ -3688,7 +4042,7 @@ body.is-browsing {
 
 .favmodal__swatches {
   display: flex;
-  gap: 10px;
+  gap: 12px;
 }
 
 .favmodal__swatch {
@@ -3714,16 +4068,37 @@ body.is-browsing {
   margin-top: 8px;
 }
 
+/* Modal actions are fixed-height pills in the mockup (48/r14/15px). */
+.favmodal__actions .btn {
+  min-height: 48px;
+  padding: 0 22px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--field-2);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 400;
+}
+
+.favmodal__actions .btn--primary {
+  padding: 0 28px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: none;
+}
+
 /* ----------------------------------------------------------- bottom strip */
 
 .bottomstrip {
   position: fixed;
-  left: 104px;
-  right: 28px;
+  /* Aligned to the centred content column edge (mockup: frame padding 108). */
+  left: max(96px, calc(50% - 344px));
+  right: max(96px, calc(50% - 344px));
   bottom: calc(24px + var(--nav-total));
   z-index: 40;
   min-height: 68px;
-  padding: 12px 20px;
+  padding: 0 20px;
   border: 0;
   border-radius: 20px;
   background: var(--chip);

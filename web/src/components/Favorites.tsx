@@ -1,38 +1,8 @@
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { ReactNode } from 'react'
-import { addFavorite, FAV_PALETTE, removeFavorite } from '../favorites'
+import { addFavorite, FAV_PALETTE } from '../favorites'
 import type { Favorite } from '../favorites'
 import { useMarquee } from '../hooks/useMarquee'
-import {
-  CloseIcon,
-  InstagramBrandIcon,
-  PlusIcon,
-  TikTokBrandIcon,
-  XBrandIcon,
-  YouTubeBrandIcon,
-} from './Icons'
-
-/**
- * Real brand logo for the seeded shortcuts; user-added favorites keep the
- * letter fallback. Matched on registrable-ish domain (suffix), so
- * "m.youtube.com" and "youtu.be" both hit the YouTube mark.
- */
-function brandMark(url: string): ReactNode | null {
-  const host = url
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/^www\./, '')
-    .split('/')[0]
-  const size = { width: 34, height: 34 }
-  if (host === 'youtu.be' || host.endsWith('youtube.com')) return <YouTubeBrandIcon {...size} />
-  if (host.endsWith('tiktok.com')) return <TikTokBrandIcon {...size} />
-  if (host.endsWith('instagram.com')) return <InstagramBrandIcon {...size} />
-  if (host === 'x.com' || host.endsWith('twitter.com')) return <XBrandIcon {...size} />
-  return null
-}
-
 
 interface FavoritesProps {
   favorites: Favorite[]
@@ -48,7 +18,7 @@ interface FavoritesProps {
 export function Favorites({ favorites, launched, dimOp, onLaunch, onChange }: FavoritesProps) {
   const [modalOpen, setModalOpen] = useState(false)
   const { trackRef, offset, dragging, didDrag, handlers } = useMarquee({
-    speed: -27,
+    speed: -30,
     paused: modalOpen,
   })
 
@@ -60,78 +30,58 @@ export function Favorites({ favorites, launched, dimOp, onLaunch, onChange }: Fa
   }
 
   const tile = (fav: Favorite, clone: boolean) => (
-    <div key={`${fav.id}${clone ? '-c' : ''}`} className="mtile-wrap">
-      <button
-        type="button"
-        className="mtile mtile--fav"
-        aria-hidden={clone || undefined}
-        tabIndex={clone ? -1 : undefined}
-        style={dimOp !== null && dimOp !== undefined && fav.url === launched ? { opacity: dimOp } : undefined}
-        onClick={() => {
-          if (didDrag()) return
-          onLaunch(fav)
-        }}
-      >
-        <span
-          className="mtile__icon"
-          style={{
-            background: FAV_PALETTE[fav.color]?.bg,
-            color: FAV_PALETTE[fav.color]?.ink,
-          }}
-        >
-          {brandMark(fav.url) ?? fav.label.charAt(0).toUpperCase()}
-        </span>
-        <span className="mtile__label">{fav.label}</span>
-      </button>
-      {!clone && (
-        <button
-          type="button"
-          className="mtile__x"
-          aria-label={`Remove ${fav.label}`}
-          onClick={() => onChange(removeFavorite(favorites, fav.id))}
-        >
-          <CloseIcon width={14} height={14} />
-        </button>
-      )}
-    </div>
-  )
-
-  const addTile = (clone: boolean) => (
     <button
-      key={clone ? 'add-c' : 'add'}
+      key={`${fav.id}${clone ? '-c' : ''}`}
       type="button"
-      className="mtile mtile--add"
+      className="mtile mtile--fav"
       aria-hidden={clone || undefined}
       tabIndex={clone ? -1 : undefined}
-      aria-label="Add a favorite"
+      style={dimOp !== null && dimOp !== undefined && fav.url === launched ? { opacity: dimOp } : undefined}
       onClick={() => {
         if (didDrag()) return
-        setModalOpen(true)
+        onLaunch(fav)
       }}
     >
-      <span className="mtile__icon mtile__icon--add">
-        <PlusIcon width={26} height={26} />
+      <span
+        className="mtile__icon"
+        style={{
+          background: FAV_PALETTE[fav.color]?.bg,
+          color: FAV_PALETTE[fav.color]?.ink,
+        }}
+      >
+        {fav.label.charAt(0).toUpperCase()}
       </span>
-      <span className="mtile__label">Add</span>
+      <span className="mtile__label">{fav.label}</span>
     </button>
   )
 
   return (
     <div className="hblock">
       <span className="hblock__label">Favorites</span>
-      <div className={`marquee${dragging ? ' marquee--drag' : ''}`} {...handlers}>
-        <div
-          className="marquee__track"
-          ref={trackRef}
-          style={{ transform: `translateX(${offset}px)` }}
-        >
-          {favorites.map((fav) => tile(fav, false))}
-          {addTile(false)}
-          <span aria-hidden="true" className="marquee__clone">
-            {favorites.map((fav) => tile(fav, true))}
-            {addTile(true)}
-          </span>
+      <div className="favrow">
+        <div className={`marquee${dragging ? ' marquee--drag' : ''}`} {...handlers}>
+          <div
+            className="marquee__track"
+            ref={trackRef}
+            style={{ transform: `translateX(${offset}px)` }}
+          >
+            {favorites.map((fav) => tile(fav, false))}
+            <span aria-hidden="true" className="marquee__clone">
+              {favorites.map((fav) => tile(fav, true))}
+            </span>
+          </div>
         </div>
+        <button
+          type="button"
+          className="mtile mtile--add"
+          aria-label="Add favorite"
+          onClick={() => setModalOpen(true)}
+        >
+          <span className="mtile__icon mtile__icon--add" aria-hidden="true">
+            +
+          </span>
+          <span className="mtile__label">Add</span>
+        </button>
       </div>
 
       <AddFavoriteModal open={modalOpen} onClose={() => setModalOpen(false)} onSubmit={submit} />
@@ -205,19 +155,22 @@ function AddFavoriteModal({ open, onClose, onSubmit }: AddFavoriteModalProps) {
           />
         </label>
 
-        <div className="favmodal__swatches" role="radiogroup" aria-label="Icon color">
-          {FAV_PALETTE.map((swatch, i) => (
-            <button
-              key={swatch.bg}
-              type="button"
-              role="radio"
-              aria-checked={color === i}
-              aria-label={`Color ${i + 1}`}
-              className={`favmodal__swatch${color === i ? ' favmodal__swatch--on' : ''}`}
-              style={{ background: swatch.bg, color: swatch.ink }}
-              onClick={() => setColor(i)}
-            />
-          ))}
+        <div className="favmodal__field">
+          <span className="favmodal__label">Icon color</span>
+          <div className="favmodal__swatches" role="radiogroup" aria-label="Icon color">
+            {FAV_PALETTE.map((swatch, i) => (
+              <button
+                key={swatch.bg}
+                type="button"
+                role="radio"
+                aria-checked={color === i}
+                aria-label={`Color ${i + 1}`}
+                className={`favmodal__swatch${color === i ? ' favmodal__swatch--on' : ''}`}
+                style={{ background: swatch.bg, color: swatch.ink }}
+                onClick={() => setColor(i)}
+              />
+            ))}
+          </div>
         </div>
 
         {error && <p className="favmodal__error">{error}</p>}

@@ -37,3 +37,13 @@ obj/
 
 ios/www/assets/
 ios/www/favicon.svg
+
+# Expo
+expo-app/webBundle.ts
+.expo/
+
+# Local agent/tooling artifacts
+.manus/
+ref-serve.log
+expo-app/*.log
+expo-app/.claude/

@@ -33,13 +33,6 @@ export function HomeHero({
 }: HomeHeroProps) {
   return (
     <div className="hstack">
-      <div className="hero__brand">
-        <span className="hero__mark">
-          <span className="hero__mark-tri" />
-        </span>
-        <span className="hero__wordmark">Video Downloader</span>
-      </div>
-
       <div className="hstack__body">
         {privateMode ? (
           <div className="privatecard">
@@ -124,8 +117,10 @@ function RecentsBlock({
   )
 }
 
-/** First two words, max 14 chars, with an ellipsis (design section D). */
+/** First two words, max 14 chars, with an ellipsis when text was dropped. */
 function clipRecent(text: string): string {
-  const words = text.trim().split(/\s+/).slice(0, 2).join(' ')
-  return words.length > 14 ? `${words.slice(0, 13)}…` : words
+  const trimmed = text.trim()
+  let out = trimmed.split(/\s+/).slice(0, 2).join(' ')
+  if (out.length > 14) out = out.slice(0, 14).trim()
+  return out !== trimmed ? `${out}…` : out
 }

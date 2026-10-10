@@ -26,10 +26,10 @@ const DELTA: Record<SeqPhase, number> = {
 }
 /** load never flashes shorter than this even on cached/instant resolves. */
 const LOAD_FLOOR_MS = 900
-/** Parked pill top offset inside the hero (below the tab strip). */
+/** Parked pill top offset inside the hero (below the browse pill rows). */
 const PARK_TOP = 56
 /** Matches `.results-panel { top }` — the rdown clip glues to the pill bottom. */
-const RES_TOP = 156
+const RES_TOP = 188
 
 const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x)
 const eio = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)

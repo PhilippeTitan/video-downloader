@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
-import { ClipboardIcon, SearchIcon } from './Icons'
+import { SearchIcon } from './Icons'
 
 interface SearchBarProps {
   value: string
@@ -22,32 +21,6 @@ const PERIMETER = 1074.5
 
 /** Bare-input search pill with the laser focus ring and analyze runner. */
 export function SearchBar({ value, onChange, onSubmit, busy, inputRef }: SearchBarProps) {
-  const [hint, setHint] = useState<string | null>(null)
-  const hintTimer = useRef<number | undefined>(undefined)
-
-  useEffect(() => () => window.clearTimeout(hintTimer.current), [])
-
-  const flashHint = (message: string) => {
-    setHint(message)
-    window.clearTimeout(hintTimer.current)
-    hintTimer.current = window.setTimeout(() => setHint(null), 2400)
-  }
-
-  const paste = async () => {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (!text.trim()) {
-        flashHint('Clipboard is empty')
-        return
-      }
-      onChange(text.trim())
-      setHint(null)
-    } catch {
-      // Browsers only expose the clipboard after a permission grant.
-      flashHint('Clipboard blocked - paste manually')
-    }
-  }
-
   const canSubmit = value.trim().length > 0
 
   return (
@@ -77,16 +50,6 @@ export function SearchBar({ value, onChange, onSubmit, busy, inputRef }: SearchB
           value={value}
           onChange={(event) => onChange(event.target.value)}
         />
-        {/* Paste stays as an app addition — the design pill is a bare input. */}
-        <button
-          type="button"
-          className="searchbar__icon"
-          aria-label="Paste from clipboard"
-          title="Paste from clipboard"
-          onClick={() => void paste()}
-        >
-          <ClipboardIcon width={18} height={18} />
-        </button>
 
         {busy && (
           <svg
@@ -112,8 +75,6 @@ export function SearchBar({ value, onChange, onSubmit, busy, inputRef }: SearchB
           </svg>
         )}
       </div>
-
-      {hint && <p className="searchbar__hint">{hint}</p>}
     </form>
   )
 }
