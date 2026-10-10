@@ -866,6 +866,7 @@ export default class App extends React.Component<{}, AppState> {
   render() {
     const s = this.state
     const active = s.jobs.filter((j) => j.status === 'downloading')
+    const first = active[0]
 
     const thumb = (k: string) => {
       const m = s.sc[k]
@@ -1192,9 +1193,9 @@ export default class App extends React.Component<{}, AppState> {
     const ph = sq ? sq.phase : ''
     const mine = (key: string) =>
       sq && sq.key === key ? (ph === 'fade' ? 1 - s.sp : ph === 'rfade' ? s.sp : 0) : 1
-    const start = (_key: string, text: string, row: string) => () => {
-      if ((this.mv[row] || 0) > 6) return
-      this.executeSearch(text)
+    const start = (key: string, text: string, row: string) => () => {
+      if (s.seq || (this.mv[row] || 0) > 6) return
+      this.setState({ seq: { key, text, phase: 'fade' }, sp: 0, q: text })
     }
     const eio = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
     const dist = ph === 'scan' ? 512 * eio(s.sp) : ph === 'load' || ph === 'done' ? 512 : 0
@@ -1224,6 +1225,44 @@ export default class App extends React.Component<{}, AppState> {
         open: start('fav:' + f.label, f.url || f.label, 'fx'),
       }
     })
+
+    const P = 1074.5
+    const tt = sq && sq.t0 ? (Date.now() - sq.t0) / 1000 : 0
+    const head = (tt * 0.8 * P) % P
+    const kk = 1 + 0.5 * Math.sin(tt * 5.2)
+    const rr = [60, 130, 220, 340, 480].map((l, i) => {
+      const len = Math.min(P - 10, l * kk)
+      return {
+        da: len.toFixed(1) + ' ' + (P - len).toFixed(1),
+        off: ((((len - head) % P) + P) % P).toFixed(1),
+        op: [1, 0.8, 0.55, 0.35, 0.2][i],
+      }
+    })
+    const barW = Math.round(560 - 68 * Math.min(1, Math.max(0, -barOff / 512)))
+    const laser =
+      ph === 'fade'
+        ? s.sp
+        : ph === 'scan' || ph === 'load' || ph === 'rdown' || ph === 'rup'
+          ? 1
+          : ph === 'done' || ph === 'rfade'
+            ? 1 - s.sp
+            : 0
+    const runner = ph === 'load' || ph === 'done'
+    const runOp = (ph === 'load' ? 1 : ph === 'done' ? 1 - s.sp : 0) * (sq && sq.skip ? 0 : 1)
+    const loading = ph === 'load'
+    const status = sq ? 'Looking up ' + sq.text.slice(0, 40) + '…' : ''
+    const qText = sq && ph === 'fade' ? sq.text.slice(0, Math.ceil(s.sp * sq.text.length)) : s.q
+    const qAlpha = (ph === 'fade' ? 0.3 + 0.7 * s.sp : 1) * (1 - s.tsp)
+    const showResults = ph === 'done' || ph === 'rdown'
+    const resTop = s.tabs.length ? 164 : 140
+    const resOp = (ph === 'rdown' ? 1 : s.sp) * (1 - s.tsp)
+    const resY = ph === 'rdown' ? 0 : Math.round((1 - s.sp) * 16)
+    const resClip = ph === 'rdown' ? Math.max(0, Math.round(560 + barOff + 60 - resTop)) : 0
+    const isSiteRes = !!sq && /^\S+\.\S+$/.test(sq.text)
+    const isSearchRes = !!sq && !/^\S+\.\S+$/.test(sq.text)
+    const resTitle = sq ? sq.text.slice(0, 40) : ''
+    const pillLabel = first ? 'Downloading · ' + first.pct + '%' : 'Video detected'
+    const pillSub = first ? 'Tap to view queue' : '3 formats ready to save'
 
     const pageUp = !!sq && (ph === 'load' || ph === 'done')
     const curText = pageUp ? sq.text : ''
@@ -1732,7 +1771,6 @@ export default class App extends React.Component<{}, AppState> {
       transform: `translateX(${Math.round(-340 * (1 - ez(s.dwp)))}px)`,
     }
 
-    const first = active[0]
     const barOf = (pct: number) => ({
       display: 'block',
       height: 6,
@@ -1809,8 +1847,8 @@ export default class App extends React.Component<{}, AppState> {
                         alignItems: 'center',
                         gap: 32,
                         clipPath: `inset(0 0 ${clipBv}px 0)`,
-                        opacity: s.webviewSrc ? 0 : (ph === 'rfade' ? s.sp : 1),
-                        pointerEvents: (sq || s.webviewSrc) ? 'none' : 'auto',
+                        opacity: ph === 'rfade' ? s.sp : 1,
+                        pointerEvents: sq ? 'none' : 'auto',
                       }}
                     >
                       {/* Logo and Brand Title */}
@@ -2158,300 +2196,425 @@ export default class App extends React.Component<{}, AppState> {
                       </div>
                     </div>
 
-                    {/* Home Centered Search Bar (Shown when not in active webview) */}
-                    {!s.webviewSrc && (
-                      <div
-                        style={{
-                          position: 'absolute',
-                          left: 0,
-                          right: 0,
-                          top: '50%',
-                          marginTop: -30,
-                          display: 'flex',
-                          justifyContent: 'center',
-                          zIndex: 20,
-                        }}
-                      >
-                        <form
-                          onSubmit={(e) => {
-                            e.preventDefault()
-                            this.executeSearch(s.q)
-                          }}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        right: 0,
+                        top: '50%',
+                        marginTop: -30,
+                        display: 'flex',
+                        justifyContent: 'center',
+                        transform: `translateY(${barOff}px)`,
+                      }}
+                    >
+                      <div style={{ position: 'relative', width: '100%', maxWidth: barW }}>
+                        <div
                           style={{
-                            position: 'relative',
-                            width: '100%',
-                            maxWidth: 560,
+                            position: 'absolute',
+                            left: -5,
+                            right: -5,
+                            top: -5,
+                            bottom: -5,
+                            borderRadius: 35,
+                            border: '2px solid #b7a6ff',
+                            boxShadow:
+                              '0 0 22px 4px rgba(124,92,255,.85),inset 0 0 14px rgba(124,92,255,.5)',
+                            opacity: laser,
+                            pointerEvents: 'none',
                           }}
-                        >
-                          {/* Search Icon */}
+                        />
+                        {runner && (
                           <svg
-                            width="22"
-                            height="22"
-                            viewBox="0 0 24 24"
+                            width="502"
+                            height="70"
+                            viewBox="0 0 502 70"
                             fill="none"
-                            stroke="#9aa3b2"
-                            strokeWidth="2"
-                            style={{ position: 'absolute', left: 22, top: 19, pointerEvents: 'none', zIndex: 2 }}
-                          >
-                            <circle cx="11" cy="11" r="7" />
-                            <path d="M20 20l-4-4" />
-                          </svg>
-
-                          {/* Search Input */}
-                          <input
-                            type="text"
-                            aria-label="Search or paste a link"
-                            placeholder="Search or paste a link"
-                            value={s.q}
-                            onChange={(e) => this.setState({ q: e.target.value })}
-                            style={{
-                              width: '100%',
-                              height: 60,
-                              boxSizing: 'border-box',
-                              borderRadius: 30,
-                              border: '1px solid #2e3447',
-                              background: '#1d2029',
-                              color: '#e8eaf0',
-                              fontSize: 17,
-                              fontFamily: 'inherit',
-                              padding: '0 120px 0 58px',
-                              boxShadow: '0 8px 28px rgba(0,0,0,.35)',
-                              outline: 'none',
-                            }}
-                          />
-
-                          {/* Search Action Button */}
-                          <button
-                            type="submit"
                             style={{
                               position: 'absolute',
-                              right: 7,
-                              top: 7,
-                              bottom: 7,
-                              padding: '0 22px',
-                              borderRadius: 24,
-                              background: '#7c5cff',
-                              color: '#fff',
-                              border: 'none',
-                              fontSize: 14,
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              boxShadow: '0 4px 14px rgba(124,92,255,0.4)',
+                              left: -5,
+                              top: -5,
+                              pointerEvents: 'none',
+                              opacity: runOp,
+                              filter: 'drop-shadow(0 0 7px #9b83ff)',
                             }}
                           >
-                            <span>Search</span>
-                          </button>
-                        </form>
+                            <rect
+                              x="1.5"
+                              y="1.5"
+                              width="499"
+                              height="67"
+                              rx="33.5"
+                              stroke="#7c5cff"
+                              strokeOpacity={rr[4].op}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              strokeDasharray={rr[4].da}
+                              strokeDashoffset={rr[4].off}
+                            />
+                            <rect
+                              x="1.5"
+                              y="1.5"
+                              width="499"
+                              height="67"
+                              rx="33.5"
+                              stroke="#9b83ff"
+                              strokeOpacity={rr[3].op}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              strokeDasharray={rr[3].da}
+                              strokeDashoffset={rr[3].off}
+                            />
+                            <rect
+                              x="1.5"
+                              y="1.5"
+                              width="499"
+                              height="67"
+                              rx="33.5"
+                              stroke="#b7a6ff"
+                              strokeOpacity={rr[2].op}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              strokeDasharray={rr[2].da}
+                              strokeDashoffset={rr[2].off}
+                            />
+                            <rect
+                              x="1.5"
+                              y="1.5"
+                              width="499"
+                              height="67"
+                              rx="33.5"
+                              stroke="#d6ccff"
+                              strokeOpacity={rr[1].op}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              strokeDasharray={rr[1].da}
+                              strokeDashoffset={rr[1].off}
+                            />
+                            <rect
+                              x="1.5"
+                              y="1.5"
+                              width="499"
+                              height="67"
+                              rx="33.5"
+                              stroke="#ffffff"
+                              strokeOpacity={rr[0].op}
+                              strokeWidth="3"
+                              strokeLinecap="round"
+                              strokeDasharray={rr[0].da}
+                              strokeDashoffset={rr[0].off}
+                            />
+                          </svg>
+                        )}
+                        {loading && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: 0,
+                              right: 0,
+                              top: 76,
+                              textAlign: 'center',
+                              fontSize: 13,
+                              color: '#9aa3b2',
+                            }}
+                          >
+                            {status}
+                          </div>
+                        )}
+                        <svg
+                          width="22"
+                          height="22"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="#9aa3b2"
+                          strokeWidth="2"
+                          style={{ position: 'absolute', left: 22, top: 19 }}
+                        >
+                          <circle cx="11" cy="11" r="7" />
+                          <path d="M20 20l-4-4" />
+                        </svg>
+                        <input
+                          type="text"
+                          aria-label="Search or paste a link"
+                          placeholder="Search or paste a link"
+                          value={qText}
+                          onChange={(e) => this.setState({ q: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key !== 'Enter') return
+                            const t = (s.q || '').trim()
+                            if (!t) return
+                            if (!s.seq)
+                              this.setState({ seq: { key: 'typed', text: t, phase: 'scan' }, sp: 0 })
+                            else if (s.seq.phase === 'done')
+                              this.setState({
+                                seq: { ...s.seq, phase: 'load', text: t, t0: Date.now() },
+                                sp: 0,
+                              })
+                          }}
+                          style={{
+                            width: '100%',
+                            height: 60,
+                            boxSizing: 'border-box',
+                            borderRadius: 30,
+                            border: 0,
+                            background: '#1d2029',
+                            color: `rgba(232,234,240,${qAlpha})`,
+                            fontSize: 17,
+                            fontFamily: 'inherit',
+                            padding: '0 24px 0 58px',
+                            boxShadow: '0 8px 28px rgba(0,0,0,.35)',
+                          }}
+                        />
                       </div>
-                    )}
+                    </div>
 
-                    {/* LIVE WEBVIEW BROWSER (Shown when webviewSrc is active) */}
-                    {s.webviewSrc && (
+                    {showResults && (
                       <div
                         style={{
                           position: 'absolute',
-                          left: 0,
-                          right: 0,
-                          top: 10,
-                          bottom: 16,
+                          left: isSearchRes ? -84 : 0,
+                          right: isSearchRes ? -84 : 0,
+                          top: resTop,
+                          bottom: 24,
                           display: 'flex',
-                          flexDirection: 'column',
-                          gap: 10,
-                          zIndex: 25,
+                          justifyContent: 'center',
+                          opacity: resOp,
+                          transform: `translateY(${resY}px)`,
+                          clipPath: `inset(${resClip}px 0 0 0)`,
                         }}
                       >
-                        {/* Interactive Webview Header Bar */}
                         <div
                           style={{
+                            width: '100%',
+                            maxWidth: isSearchRes ? 772 : 640,
                             display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            padding: '8px 12px',
-                            background: '#161822',
-                            borderRadius: 18,
-                            border: '1px solid #282c3c',
-                            gap: 10,
-                            boxShadow: '0 4px 16px rgba(0,0,0,.35)',
+                            flexDirection: 'column',
+                            gap: 14,
                           }}
                         >
-                          {/* Back / Home Button */}
-                          <button
-                            aria-label="Back to Home"
-                            onClick={() => this.setState({ webviewSrc: '', webviewUrl: '', seq: null, q: '' })}
-                            style={{
-                              height: 40,
-                              padding: '0 14px',
-                              borderRadius: 14,
-                              background: '#222533',
-                              border: '1px solid #2e3447',
-                              color: '#c4b5ff',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 6,
-                              fontSize: 13,
-                              fontWeight: 700,
-                              cursor: 'pointer',
-                              flex: 'none',
-                            }}
-                          >
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-                              <path d="M15 18l-6-6 6-6" />
-                            </svg>
-                            <span>Home</span>
-                          </button>
-
-                          {/* Address / Search Bar */}
-                          <form
-                            onSubmit={(e) => {
-                              e.preventDefault()
-                              this.executeSearch(s.q)
-                            }}
-                            style={{
-                              flex: 1,
-                              minWidth: 0,
-                              height: 40,
-                              position: 'relative',
-                              display: 'flex',
-                              alignItems: 'center',
-                            }}
-                          >
-                            <svg
-                              width="15"
-                              height="15"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="#7c5cff"
-                              strokeWidth="2.2"
-                              style={{ position: 'absolute', left: 14, pointerEvents: 'none' }}
-                            >
-                              <circle cx="11" cy="11" r="7" />
-                              <path d="M20 20l-4-4" />
-                            </svg>
-                            <input
-                              type="text"
-                              value={s.q}
-                              onChange={(e) => this.setState({ q: e.target.value })}
-                              placeholder="Search or paste video URL…"
+                          {isSiteRes && (
+                            <>
+                              <div style={{ fontSize: 13, color: '#9aa3b2' }}>{resTitle}</div>
+                              <div
+                                style={{
+                                  height: 300,
+                                  borderRadius: 24,
+                                  background: 'linear-gradient(135deg,#34304f,#1a1c27)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    borderLeft: '44px solid #e8eaf0',
+                                    borderTop: '26px solid transparent',
+                                    borderBottom: '26px solid transparent',
+                                    marginLeft: 10,
+                                    opacity: 0.85,
+                                  }}
+                                />
+                              </div>
+                              <button
+                                onClick={() =>
+                                  first ? this.setState({ screen: 'down' }) : this.setState({ sheet: true })
+                                }
+                                style={{
+                                  minHeight: 76,
+                                  padding: '0 20px',
+                                  borderRadius: 20,
+                                  background: '#7c5cff',
+                                  color: '#fff',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 16,
+                                  textAlign: 'left',
+                                }}
+                              >
+                                <span style={{ flex: 1 }}>
+                                  <span style={{ display: 'block', fontSize: 16, fontWeight: 600 }}>
+                                    {pillLabel}
+                                  </span>
+                                  <span style={{ display: 'block', fontSize: 13, opacity: 0.9 }}>
+                                    {pillSub}
+                                  </span>
+                                </span>
+                                <span style={{ fontSize: 22 }}>›</span>
+                              </button>
+                              <div style={{ width: '70%', height: 10, borderRadius: 5, background: '#1d2029' }} />
+                              <div style={{ width: '50%', height: 10, borderRadius: 5, background: '#1d2029' }} />
+                            </>
+                          )}
+                          {isSearchRes && (
+                            <div
                               style={{
                                 width: '100%',
-                                height: '100%',
-                                boxSizing: 'border-box',
-                                borderRadius: 20,
-                                background: '#1c1f2b',
-                                border: '1px solid #2c3245',
-                                color: '#e8eaf0',
-                                fontSize: 13,
-                                padding: '0 64px 0 36px',
-                                outline: 'none',
-                              }}
-                            />
-                            <button
-                              type="submit"
-                              style={{
-                                position: 'absolute',
-                                right: 3,
-                                top: 3,
-                                bottom: 3,
-                                padding: '0 12px',
-                                borderRadius: 16,
-                                background: '#7c5cff',
-                                color: '#fff',
-                                border: 'none',
-                                fontSize: 12,
-                                fontWeight: 700,
-                                cursor: 'pointer',
-                              }}
-                            >
-                              Go
-                            </button>
-                          </form>
-
-                          {/* Reload Button */}
-                          <button
-                            aria-label="Reload"
-                            onClick={() => {
-                              const src = s.webviewSrc
-                              this.setState({ webviewSrc: '' }, () => {
-                                setTimeout(() => this.setState({ webviewSrc: src }), 50)
-                              })
-                            }}
-                            style={{
-                              width: 40,
-                              height: 40,
-                              borderRadius: 14,
-                              background: '#222533',
-                              border: '1px solid #2e3447',
-                              color: '#9aa3b2',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              cursor: 'pointer',
-                              flex: 'none',
-                            }}
-                          >
-                            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                              <path d="M23 4v6h-6" />
-                              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                            </svg>
-                          </button>
-
-                          {/* Save Video Action Button */}
-                          {s.detectedVideo && (
-                            <button
-                              onClick={() => this.setState({ sheet: true })}
-                              style={{
-                                height: 40,
-                                padding: '0 16px',
-                                borderRadius: 20,
-                                background: 'linear-gradient(135deg, #7c5cff, #9b51e0)',
-                                color: '#fff',
-                                fontSize: 13,
-                                fontWeight: 700,
                                 display: 'flex',
-                                alignItems: 'center',
-                                gap: 6,
-                                flex: 'none',
-                                border: 'none',
-                                cursor: 'pointer',
-                                boxShadow: '0 4px 14px rgba(124,92,255,.45)',
+                                flexDirection: 'column',
+                                gap: 12,
+                                height: '100%',
+                                minHeight: 740,
                               }}
                             >
-                              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-                                <path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14" />
-                              </svg>
-                              <span>Save Video</span>
-                            </button>
-                          )}
-                        </div>
+                              {/* Safari-like unified top browser bar */}
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 12,
+                                  padding: '8px 14px',
+                                  borderRadius: 16,
+                                  background: '#191b24',
+                                  border: '1px solid #272a38',
+                                  boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9aa3b2' }}>
+                                  <button
+                                    aria-label="Back"
+                                    onClick={() => {
+                                      try {
+                                        const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
+                                        if (iframe?.contentWindow) iframe.contentWindow.history.back()
+                                      } catch {}
+                                    }}
+                                    style={{
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: 8,
+                                      background: 'rgba(255,255,255,0.06)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: '#e8eaf0',
+                                    }}
+                                  >
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M15 18l-6-6 6-6" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    aria-label="Forward"
+                                    onClick={() => {
+                                      try {
+                                        const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
+                                        if (iframe?.contentWindow) iframe.contentWindow.history.forward()
+                                      } catch {}
+                                    }}
+                                    style={{
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: 8,
+                                      background: 'rgba(255,255,255,0.06)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: '#e8eaf0',
+                                    }}
+                                  >
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M9 18l6-6-6-6" />
+                                    </svg>
+                                  </button>
+                                  <button
+                                    aria-label="Reload"
+                                    onClick={() => {
+                                      try {
+                                        const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
+                                        if (iframe?.contentWindow) iframe.contentWindow.location.reload()
+                                      } catch {}
+                                    }}
+                                    style={{
+                                      width: 28,
+                                      height: 28,
+                                      borderRadius: 8,
+                                      background: 'rgba(255,255,255,0.06)',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      color: '#e8eaf0',
+                                    }}
+                                  >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19" />
+                                    </svg>
+                                  </button>
+                                </div>
 
-                        {/* Embedded Webview Frame */}
-                        <div
-                          style={{
-                            flex: 1,
-                            borderRadius: 20,
-                            overflow: 'hidden',
-                            background: '#0e0f14',
-                            border: '1px solid #262a3a',
-                            position: 'relative',
-                            boxShadow: '0 12px 36px rgba(0,0,0,.45)',
-                          }}
-                        >
-                          <iframe
-                            key={s.webviewSrc}
-                            src={s.webviewSrc}
-                            title="Webview Browser"
-                            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              border: 'none',
-                              background: '#0e0f14',
-                              display: 'block',
-                            }}
-                          />
+                                <div
+                                  style={{
+                                    flex: 1,
+                                    height: 32,
+                                    borderRadius: 10,
+                                    background: '#111218',
+                                    border: '1px solid #232736',
+                                    padding: '0 12px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 8,
+                                    fontSize: 13,
+                                    color: '#c9cedb',
+                                  }}
+                                >
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7c5cff" strokeWidth="2.4" style={{ flex: 'none' }}>
+                                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                                  </svg>
+                                  <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', flex: 1 }}>
+                                    {s.webviewUrl || `https://youtube.com/results?search_query=${encodeURIComponent(resTitle)}`}
+                                  </span>
+                                </div>
+
+                                <button
+                                  onClick={() => this.setState({ sheet: true })}
+                                  style={{
+                                    padding: '6px 14px',
+                                    borderRadius: 10,
+                                    background: '#7c5cff',
+                                    color: '#fff',
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: 6,
+                                  }}
+                                >
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+                                    <path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14" />
+                                  </svg>
+                                  <span>Sniff Media</span>
+                                </button>
+                              </div>
+
+                              {/* Live Browser Surface — naturally fills the container without vertical side letterboxing */}
+                              <div
+                                className="browser-slot"
+                                style={{
+                                  flex: 1,
+                                  minHeight: 680,
+                                  borderRadius: 20,
+                                  overflow: 'hidden',
+                                  border: '1px solid #252837',
+                                  background: '#0d0e14',
+                                  boxShadow: '0 12px 36px rgba(0,0,0,0.45)',
+                                  position: 'relative',
+                                }}
+                              >
+                                <iframe
+                                  className="safari-webview-frame"
+                                  title="Browsing Session"
+                                  src={s.webviewSrc || `/api/webview-search?q=${encodeURIComponent(resTitle)}`}
+                                  style={{
+                                    width: '100%',
+                                    height: '100%',
+                                    border: 'none',
+                                    background: '#0e0f14',
+                                    borderRadius: 20,
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}
