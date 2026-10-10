@@ -114,3 +114,16 @@ button:focus-visible {
   justify-content: center;
   flex-shrink: 0;
 }
+
+.browser-slot {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.safari-webview-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}

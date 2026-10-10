@@ -1,4 +1,5 @@
 import React from 'react'
+import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, onNavState } from './bridge'
 
 interface FavItem {
   label: string
@@ -154,6 +155,8 @@ interface AppState {
   detectedVideo: DetectedVideo | null
   webviewSrc: string
   webviewUrl: string
+  canGoBackNative?: boolean
+  canGoForwardNative?: boolean
 }
 
 const STORAGE_KEY_LIB = 'vd-downloads-v1'
@@ -168,44 +171,49 @@ const DEFAULT_FAVS: FavItem[] = [
   { label: 'X', letter: 'X', url: 'x.com', bg: '#2d2a55', ink: '#b7a6ff' },
 ]
 
-const DEFAULT_LIB: LibItem[] = [
-  {
-    id: 'l1',
-    title: 'Big Buck Bunny (Open Source 4K)',
-    fmt: '1080p · MP4',
-    size: '158 MB',
-    when: 'Today',
-    dur: '9:56',
-    audio: false,
-    mb: 158,
-    isNew: true,
-    src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-  },
-  {
-    id: 'l2',
-    title: 'Elephants Dream Sci-Fi',
-    fmt: '720p · MP4',
-    size: '84 MB',
-    when: 'Today',
-    dur: '10:53',
-    audio: false,
-    mb: 84,
-    isNew: true,
-    src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-  },
-  {
-    id: 'l3',
-    title: 'Tears of Steel VFX',
-    fmt: '1080p · MP4',
-    size: '120 MB',
-    when: 'Yesterday',
-    dur: '12:14',
-    audio: false,
-    mb: 120,
-    prog: 35,
-    src: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-  },
-]
+function resolveWebTarget(text: string): { src: string; url: string } {
+  const txt = text.trim()
+  if (!txt) return { src: '', url: '' }
+
+  const ytMatch = txt.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
+  if (ytMatch) {
+    return {
+      src: `https://www.youtube-nocookie.com/embed/${ytMatch[1]}?autoplay=1&enablejsapi=1&playsinline=1`,
+      url: `https://www.youtube.com/watch?v=${ytMatch[1]}`,
+    }
+  }
+
+  if (/\.(mp4|mov|webm|m4v|m3u8)(\?|$)/i.test(txt)) {
+    return { src: txt, url: txt }
+  }
+
+  if (/^https?:\/\//i.test(txt)) {
+    if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
+      const vid = txt.match(/(?:v=|embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1]
+      if (vid) {
+        return {
+          src: `https://www.youtube-nocookie.com/embed/${vid}?autoplay=1&enablejsapi=1&playsinline=1`,
+          url: `https://www.youtube.com/watch?v=${vid}`,
+        }
+      }
+      return { src: `/api/webview-search?q=trending`, url: txt }
+    }
+    return { src: txt, url: txt }
+  }
+
+  if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(\/.*)?$/i.test(txt)) {
+    if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
+      return { src: `/api/webview-search?q=trending`, url: `https://${txt}` }
+    }
+    return { src: `https://${txt}`, url: `https://${txt}` }
+  }
+
+  // Generic search query (e.g. "jaj"): redirect as an actual search engine
+  return {
+    src: `https://www.bing.com/search?q=${encodeURIComponent(txt)}`,
+    url: `https://www.bing.com/search?q=${encodeURIComponent(txt)}`,
+  }
+}
 
 export default class App extends React.Component<{}, AppState> {
   t: any = null
@@ -234,27 +242,87 @@ export default class App extends React.Component<{}, AppState> {
   afterTs: (() => void) | null = null
   afterClose: (() => void) | null = null
   privNext = false
+  tabHistories: Record<number, { stack: string[]; index: number }> = {}
+  unsubNav: (() => void) | null = null
+  browserSlotRef = React.createRef<HTMLDivElement>()
+
+  syncBrowserPane = () => {
+    if (!hasNativeShell()) return
+    const el = this.browserSlotRef.current
+    const isVisible = Boolean(
+      this.state.screen === 'browse' &&
+      this.state.webviewSrc &&
+      (!this.state.seq || this.state.seq.phase === 'done')
+    )
+    if (!el || !isVisible) {
+      requestBrowserPane(null)
+      return
+    }
+    const rect = el.getBoundingClientRect()
+    requestBrowserPane({
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      w: Math.round(rect.width),
+      h: Math.round(rect.height),
+      visible: true,
+    })
+  }
+
+  pushTabHistory = (tabId: number, text: string) => {
+    if (!text) return
+    const h = this.tabHistories[tabId] || { stack: [], index: -1 }
+    if (h.index >= 0 && h.stack[h.index] === text) return
+    this.tabHistories[tabId] = {
+      stack: [...h.stack.slice(0, h.index + 1), text],
+      index: h.index + 1,
+    }
+  }
+
+  goHome = () => {
+    if (this.state.screen !== 'browse') {
+      this.setState({ screen: 'browse' })
+      return
+    }
+    if (this.state.webviewSrc || (this.state.seq && this.state.seq.phase !== 'rdown')) {
+      if (hasNativeShell()) {
+        requestGoBack()
+      }
+      this.setState({ seq: { key: 'home', text: '', phase: 'rdown' }, sp: 0 })
+    }
+  }
 
   constructor(props: {}) {
     super(props)
-    let savedLib = DEFAULT_LIB
-    let savedHist = ['lofi beats', 'timelapse 4k', 'movie trailers']
+    let savedLib: LibItem[] = []
+    let savedHist: string[] = []
     let savedFavs = DEFAULT_FAVS
-    let savedDh: DhRow[] = [
-      { title: 'Big Buck Bunny (Open Source 4K)', fmt: '1080p · MP4', when: 'Today', status: 'Completed', ink: '#3ecf8e' },
-      { title: 'Elephants Dream Sci-Fi', fmt: '720p · MP4', when: 'Today', status: 'Completed', ink: '#3ecf8e' },
-    ]
+    let savedDh: DhRow[] = []
 
     if (typeof localStorage !== 'undefined') {
       try {
         const rawLib = localStorage.getItem(STORAGE_KEY_LIB)
-        if (rawLib) savedLib = JSON.parse(rawLib)
+        if (rawLib) {
+          const parsed = JSON.parse(rawLib)
+          if (Array.isArray(parsed)) {
+            savedLib = parsed.filter((item: LibItem) => !['l1', 'l2', 'l3'].includes(item?.id))
+          }
+        }
         const rawHist = localStorage.getItem(STORAGE_KEY_HIST)
-        if (rawHist) savedHist = JSON.parse(rawHist)
+        if (rawHist) {
+          const parsed = JSON.parse(rawHist)
+          if (Array.isArray(parsed)) {
+            savedHist = parsed.filter((q: string) => !['lofi beats', 'timelapse 4k', 'movie trailers'].includes(q))
+          }
+        }
         const rawFavs = localStorage.getItem(STORAGE_KEY_FAVS)
         if (rawFavs) savedFavs = JSON.parse(rawFavs)
         const rawDh = localStorage.getItem(STORAGE_KEY_DH)
-        if (rawDh) savedDh = JSON.parse(rawDh)
+        if (rawDh) {
+          const parsed = JSON.parse(rawDh)
+          if (Array.isArray(parsed)) {
+            savedDh = parsed.filter((item: DhRow) => !item?.title?.includes('Big Buck Bunny') && !item?.title?.includes('Elephants Dream'))
+          }
+        }
       } catch {}
     }
 
@@ -344,9 +412,14 @@ export default class App extends React.Component<{}, AppState> {
 
   handleResize = () => {
     if (typeof window !== 'undefined') {
-      const sw = (window.innerWidth - 32) / 900
-      const sh = (window.innerHeight - 32) / 1260
-      this.setState({ scale: Math.min(sw, sh, 1) })
+      const isDevice = hasNativeShell() || window.innerWidth < 860 || window.innerHeight < 900
+      if (isDevice) {
+        this.setState({ scale: 1 }, this.syncBrowserPane)
+      } else {
+        const sw = (window.innerWidth - 32) / 900
+        const sh = (window.innerHeight - 32) / 1260
+        this.setState({ scale: Math.min(sw, sh, 1) }, this.syncBrowserPane)
+      }
     }
   }
 
@@ -369,6 +442,11 @@ export default class App extends React.Component<{}, AppState> {
   executeSearch = (text: string) => {
     const query = (text || '').trim()
     if (!query) return
+
+    const curTab = this.state.tabs[this.state.ci]
+    if (curTab) {
+      this.pushTabHistory(curTab.id, query)
+    }
 
     const updatedTabs = this.state.tabs.length > 0
       ? this.state.tabs.map((tab, idx) => idx === this.state.ci ? { ...tab, text: query } : tab)
@@ -467,7 +545,7 @@ export default class App extends React.Component<{}, AppState> {
           const isFmt480 = j.fmtLabel.includes('480')
           const sizeStr = j.audio ? '9.4 MB' : isFmt1080 ? '185 MB' : isFmt480 ? '39 MB' : '84 MB'
           const mbNum = j.audio ? 9 : isFmt1080 ? 185 : isFmt480 ? 39 : 84
-          const durSec = this.state.detectedVideo?.durationSec || 596
+          const durSec = this.state.detectedVideo?.durationSec || 0
           const minutes = Math.floor(durSec / 60)
           const seconds = String(durSec % 60).padStart(2, '0')
 
@@ -477,11 +555,11 @@ export default class App extends React.Component<{}, AppState> {
             fmt: j.fmtLabel,
             size: sizeStr,
             when: 'Just now',
-            dur: `${minutes}:${seconds}`,
+            dur: durSec > 0 ? `${minutes}:${seconds}` : 'Media',
             audio: !!j.audio,
             mb: mbNum,
             isNew: true,
-            src: j.src || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+            src: j.src || '',
           }
           const nextDh: DhRow = {
             title: j.title,
@@ -507,6 +585,13 @@ export default class App extends React.Component<{}, AppState> {
       const q = this.state.seq
       if (q && (q.phase === 'load' || q.phase === 'done')) this.setState({ rt: Date.now() })
     }, 16)
+
+    this.unsubNav = onNavState((e) => {
+      this.setState({
+        canGoBackNative: e.canGoBack,
+        canGoForwardNative: e.canGoForward,
+      })
+    })
 
     this.tick = setInterval(() => {
       const s = this.state
@@ -566,62 +651,35 @@ export default class App extends React.Component<{}, AppState> {
             }
             // Resolve Webview Source URL
             const txt = s.seq.text.trim()
-            let webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
-            let webUrl = `search://${encodeURIComponent(txt)}`
-
-            const ytMatch = txt.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
-            if (ytMatch) {
-              webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
-              webUrl = `https://www.youtube.com/watch?v=${ytMatch[1]}`
-            } else if (/\.(mp4|mov|webm|m4v|m3u8)(\?|$)/i.test(txt)) {
-              webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
-              webUrl = txt
-            } else if (/^https?:\/\//i.test(txt)) {
-              if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
-                webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
-                webUrl = txt
-              } else {
-                webSrc = txt
-                webUrl = txt
-              }
-            } else if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/i.test(txt)) {
-              if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
-                webSrc = `/api/webview-search?q=trending`
-                webUrl = `https://${txt}`
-              } else {
-                webSrc = `https://${txt}`
-                webUrl = `https://${txt}`
-              }
+            const target = resolveWebTarget(txt)
+            up.webviewSrc = target.src
+            up.webviewUrl = target.url
+            const curTab = s.tabs[s.ci]
+            if (curTab) {
+              this.pushTabHistory(curTab.id, txt)
             }
-            up.webviewSrc = webSrc
-            up.webviewUrl = webUrl
             this.handleVideoDetected(txt)
           }
         } else if (s.seq.phase === 'done' && s.sp < 1) {
           up.sp = Math.min(1, s.sp + 0.07)
         } else if (s.seq.phase === 'rdown') {
-          const p = Math.min(1, s.sp + 0.04)
-          up.sp = p
-          if (p === 1) {
-            up.seq = { ...s.seq, phase: 'rup' }
-            up.sp = 0
-            up.q = ''
-          }
-        } else if (s.seq.phase === 'rup') {
-          const p = Math.min(1, s.sp + 0.045)
-          up.sp = p
-          if (p === 1) {
-            up.seq = { ...s.seq, phase: 'rfade' }
-            up.sp = 0
-          }
-        } else if (s.seq.phase === 'rfade') {
-          const p = Math.min(1, s.sp + 0.08)
+          const p = Math.min(1, s.sp + 0.05)
           up.sp = p
           if (p === 1) {
             up.seq = null
             up.sp = 0
             up.q = ''
+            up.webviewSrc = ''
+            up.webviewUrl = ''
             up.detectedVideo = null
+            up.tabs = s.tabs.map((tab, idx) => (idx === s.ci ? { ...tab, text: '' } : tab))
+            const curTab = s.tabs[s.ci]
+            if (curTab) {
+              this.tabHistories[curTab.id] = { stack: [], index: -1 }
+            }
+            if (hasNativeShell()) {
+              requestBrowserPane(null)
+            }
           }
         }
       }
@@ -794,8 +852,8 @@ export default class App extends React.Component<{}, AppState> {
       if (s.hm && s.hmp < 1) up.hmp = Math.min(1, s.hmp + 0.14)
       else if (!s.hm && s.hmp > 0) up.hmp = Math.max(0, s.hmp - 0.14)
       {
-        const hT = s.screen === 'browse' && (!s.seq || s.seq.phase === 'rfade') ? 1 : 0
-        if (s.hb !== hT) up.hb = hT > s.hb ? Math.min(1, s.hb + 0.1) : Math.max(0, s.hb - 0.1)
+        const hT = (s.screen === 'browse' && !s.webviewSrc && (!s.seq || s.seq.phase === 'rfade')) || (s.seq && s.seq.phase === 'rdown') ? 1 : 0
+        if (s.hb !== hT) up.hb = hT > s.hb ? Math.min(1, s.hb + 0.12) : Math.max(0, s.hb - 0.12)
         const pT = s.cpriv ? 1 : 0
         if (s.pv !== pT) up.pv = pT > s.pv ? Math.min(1, s.pv + 0.08) : Math.max(0, s.pv - 0.08)
         if (s.dw && s.dwp < 1) up.dwp = Math.min(1, s.dwp + 0.12)
@@ -805,7 +863,12 @@ export default class App extends React.Component<{}, AppState> {
     }, 30)
   }
 
+  componentDidUpdate() {
+    this.syncBrowserPane()
+  }
+
   componentWillUnmount() {
+    if (this.unsubNav) this.unsubNav()
     clearInterval(this.t)
     clearInterval(this.tick)
     clearInterval(this.rtick)
@@ -1213,14 +1276,12 @@ export default class App extends React.Component<{}, AppState> {
         : ph === 'load' || ph === 'done'
           ? -512
           : ph === 'rdown'
-            ? -512 + 1032 * eio(s.sp)
-            : ph === 'rup'
-              ? 520 - 520 * eio(s.sp)
-              : 0
+            ? -512 + 512 * eio(s.sp)
+            : 0
     const clipBv =
       ph === 'scan'
         ? Math.max(0, Math.round(dist - 22))
-        : ph === 'load' || ph === 'done' || ph === 'rdown' || ph === 'rup'
+        : ph === 'load' || ph === 'done'
           ? 9999
           : 0
 
@@ -1250,29 +1311,64 @@ export default class App extends React.Component<{}, AppState> {
     const laser =
       ph === 'fade'
         ? s.sp
-        : ph === 'scan' || ph === 'load' || ph === 'rdown' || ph === 'rup'
+        : ph === 'scan' || ph === 'load'
           ? 1
-          : ph === 'done' || ph === 'rfade'
+          : ph === 'done'
             ? 1 - s.sp
-            : 0
+            : ph === 'rdown'
+              ? Math.max(0, 1 - s.sp * 2)
+              : 0
     const runner = ph === 'load' || ph === 'done'
     const runOp = (ph === 'load' ? 1 : ph === 'done' ? 1 - s.sp : 0) * (sq && sq.skip ? 0 : 1)
     const loading = ph === 'load'
     const status = sq ? 'Looking up ' + sq.text.slice(0, 40) + '…' : ''
     const qText = sq && ph === 'fade' ? sq.text.slice(0, Math.ceil(s.sp * sq.text.length)) : s.q
     const qAlpha = (ph === 'fade' ? 0.3 + 0.7 * s.sp : 1) * (1 - s.tsp)
-    const showResults = (ph === 'done' || ph === 'rdown' || (!!s.webviewSrc && !s.seq)) && s.screen === 'browse'
-    const resOp = ph === 'rdown' ? 1 - s.sp : ph === 'done' ? s.sp : 1
-    const resY = ph === 'done' ? Math.round((1 - s.sp) * 16) : 0
+    const isHomeNow = s.screen === 'browse' && !s.webviewSrc && (!s.seq || s.seq.phase === 'rfade')
+    const resTop = s.tabs.length ? 164 : 140
+    const resClip = ph === 'rdown' ? Math.max(0, Math.round(512 * s.sp)) : 0
+    const chevOp =
+      ph === 'done'
+        ? s.sp
+        : ph === 'rdown'
+          ? Math.max(0, 1 - s.sp * 2)
+          : (ph === 'fade' || ph === 'scan' || ph === 'load' || ph === 'rup' || ph === 'rfade')
+            ? 0
+            : (!isHomeNow && s.screen === 'browse')
+              ? 1
+              : 0
+    const chevPe: React.CSSProperties['pointerEvents'] = chevOp > 0.4 ? 'auto' : 'none'
+
+    const curTab = s.tabs[s.ci]
+    const curHist = curTab ? this.tabHistories[curTab.id] : undefined
+    const canGoForward = Boolean((curHist && curHist.index < curHist.stack.length - 1) || (hasNativeShell() && s.canGoForwardNative))
+    const canGoBack = Boolean(s.screen !== 'browse' || !isHomeNow || (curHist && curHist.index > 0) || (hasNativeShell() && s.canGoBackNative))
+
+    const showResults = Boolean(
+      s.screen === 'browse' &&
+      Boolean(s.webviewSrc) &&
+      (!s.seq || ph === 'done' || (ph === 'rdown' && (1 - s.sp) > 0.01))
+    )
+    const resOp = (ph === 'rdown' ? 1 - s.sp : s.sp) * (1 - s.tsp)
+    const resY = ph === 'rdown' ? 0 : Math.round((1 - s.sp) * 16)
     const resTitle = sq ? sq.text : s.q || 'Web Search'
 
     const pageUp = !!sq && (ph === 'load' || ph === 'done')
     const curText = pageUp ? sq.text : ''
-    const restore = (text: string): Partial<AppState> =>
-      text
-        ? { seq: { key: 'restore', text, phase: 'done', t0: Date.now() }, sp: 1, q: text }
-        : { seq: null, sp: 0, q: '' }
-    const subOf = (t: string) => (t ? (/^\S+\.\S+$/.test(t) ? 'Website' : 'Search') : 'Home')
+    const restore = (text: string): Partial<AppState> => {
+      if (!text) {
+        return { seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null }
+      }
+      const target = resolveWebTarget(text)
+      return {
+        seq: { key: 'restore', text, phase: 'done', t0: Date.now() },
+        sp: 1,
+        q: text,
+        webviewSrc: target.src,
+        webviewUrl: target.url,
+      }
+    }
+    const subOf = (t: string) => (t ? (/^\S+\.[a-zA-Z]{2,}/.test(t) ? 'Website' : 'Search') : 'Home')
 
     const cI = Math.min(s.ci, s.tabs.length)
     const swapState = (t: TabItem): Partial<AppState> => {
@@ -1302,14 +1398,14 @@ export default class App extends React.Component<{}, AppState> {
             sp: 0,
             q: t.text,
           } as any)
-        else this.setState(patch as any)
+        else this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
         return
       }
       if (t.text) {
         this.afterTs = () => this.setState({ ...patch, ...restore(t.text) } as any)
         this.setState({ tsph: 'out', tsp: 0 })
       } else {
-        this.setState({ ...patch, seq: { ...s.seq!, phase: 'rdown' }, sp: 0 } as any)
+        this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
       }
     }
 
@@ -1318,7 +1414,7 @@ export default class App extends React.Component<{}, AppState> {
       if (busy) return
       if (!s.tabs.length) {
         if (pageUp && s.screen === 'browse')
-          this.setState({ seq: { ...s.seq!, phase: 'rdown' }, sp: 0 })
+          this.setState({ seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null })
         return
       }
       const kk = cI > 0 ? cI - 1 : 0
@@ -1337,12 +1433,12 @@ export default class App extends React.Component<{}, AppState> {
               sp: 0,
               q: n.text,
             } as any)
-          else this.setState(patch as any)
+          else this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
         } else if (n.text) {
           this.afterTs = () => this.setState({ ...patch, ...restore(n.text) } as any)
           this.setState({ tsph: 'out', tsp: 0 })
         } else {
-          this.setState({ ...patch, seq: { ...s.seq!, phase: 'rdown' }, sp: 0 } as any)
+          this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
         }
       }
       this.setState({ cl: { id: 'cur' }, cf: 0 })
@@ -1530,9 +1626,9 @@ export default class App extends React.Component<{}, AppState> {
         ...s.tabs.slice(cI),
       ]
       if (pageUp && s.screen === 'browse') {
-        this.setState({ tabs: nt, ci: nt.length, cpriv: !!pr })
+        this.setState({ tabs: nt, ci: nt.length, cpriv: !!pr, webviewSrc: '', webviewUrl: '', detectedVideo: null })
       } else {
-        this.setState({ tabs: nt, ci: nt.length, cpriv: !!pr, seq: null, sp: 0, q: '', screen: 'browse' })
+        this.setState({ tabs: nt, ci: nt.length, cpriv: !!pr, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null, screen: 'browse' })
       }
     }
 
@@ -1756,7 +1852,6 @@ export default class App extends React.Component<{}, AppState> {
     }
     const npIc = Math.round(34 * (1 - plusFrac))
 
-    const isHomeNow = s.screen === 'browse' && (!s.seq || s.seq.phase === 'rfade')
     const hbStyle: React.CSSProperties = {
       position: 'absolute',
       inset: 0,
@@ -1781,11 +1876,24 @@ export default class App extends React.Component<{}, AppState> {
       width: `${pct}%`,
     })
 
+    const isDevice = hasNativeShell() || (typeof window !== 'undefined' && (window.innerWidth < 860 || window.innerHeight < 900))
+
     return (
-      <div className="ipad-viewport-wrapper">
-        <div className="ipad-scaler" style={{ transform: `scale(${s.scale})` }}>
+      <div className="ipad-viewport-wrapper" style={isDevice ? { width: '100vw', height: '100vh', padding: 0 } : undefined}>
+        <div className="ipad-scaler" style={isDevice ? { width: '100vw', height: '100vh', transform: 'none' } : { transform: `scale(${s.scale})` }}>
           <div
-            style={{
+            style={isDevice ? {
+              width: '100%',
+              height: '100%',
+              boxSizing: 'border-box',
+              padding: 0,
+              borderRadius: 0,
+              background: '#0e0f14',
+              position: 'relative',
+              boxShadow: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+            } : {
               width: 900,
               height: 1260,
               boxSizing: 'border-box',
@@ -1797,22 +1905,35 @@ export default class App extends React.Component<{}, AppState> {
             }}
           >
             {/* Camera dot */}
-            <div
-              style={{
-                position: 'absolute',
-                top: 16,
-                left: '50%',
-                marginLeft: -5,
-                width: 10,
-                height: 10,
-                borderRadius: 5,
-                background: '#0a0a0c',
-              }}
-            />
+            {!isDevice && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 16,
+                  left: '50%',
+                  marginLeft: -5,
+                  width: 10,
+                  height: 10,
+                  borderRadius: 5,
+                  background: '#0a0a0c',
+                }}
+              />
+            )}
 
             {/* Inner screen frame */}
             <div
-              style={{
+              style={isDevice ? {
+                width: '100%',
+                height: '100%',
+                flex: 1,
+                borderRadius: 0,
+                background: '#0e0f14',
+                color: '#e8eaf0',
+                position: 'relative',
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+              } : {
                 width: 820,
                 height: 1180,
                 borderRadius: 30,
@@ -2339,8 +2460,8 @@ export default class App extends React.Component<{}, AppState> {
                         </svg>
                         <input
                           type="text"
-                          aria-label="Search or paste a link"
-                          placeholder="Search or paste a link"
+                          aria-label="Search or enter website name"
+                          placeholder="Search or enter website name"
                           value={qText}
                           onChange={(e) => this.setState({ q: e.target.value })}
                           onKeyDown={(e) => {
@@ -2397,41 +2518,45 @@ export default class App extends React.Component<{}, AppState> {
                           position: 'absolute',
                           left: 0,
                           right: 0,
-                          top: 114,
+                          top: resTop,
                           bottom: 0,
                           display: 'flex',
                           flexDirection: 'column',
-                          background: '#0e0f14',
+                          background: hasNativeShell() ? 'transparent' : '#0e0f14',
                           zIndex: 15,
                           opacity: resOp,
                           transform: `translateY(${resY}px)`,
-                          transition: 'opacity 0.2s ease-out',
+                          clipPath: `inset(${resClip}px 0 0 0)`,
+                          WebkitClipPath: `inset(${resClip}px 0 0 0)`,
                         }}
                       >
                         {/* Live Browser Surface — fills 100% of the space on the sides edge to edge like Safari */}
                         <div
+                          ref={this.browserSlotRef}
                           className="browser-slot"
                           style={{
                             flex: 1,
                             width: '100%',
                             height: '100%',
                             overflow: 'hidden',
-                            background: '#0d0e14',
+                            background: hasNativeShell() ? 'transparent' : '#0d0e14',
                             position: 'relative',
                           }}
                         >
-                          <iframe
-                            className="safari-webview-frame"
-                            title="Browsing Session"
-                            src={s.webviewSrc || `/api/webview-search?q=${encodeURIComponent(resTitle)}`}
-                            style={{
-                              width: '100%',
-                              height: '100%',
-                              border: 'none',
-                              display: 'block',
-                              background: '#0e0f14',
-                            }}
-                          />
+                          {!hasNativeShell() && (
+                            <iframe
+                              className="safari-webview-frame"
+                              title="Browsing Session"
+                              src={s.webviewSrc || resolveWebTarget(resTitle).src}
+                              style={{
+                                width: '100%',
+                                height: '100%',
+                                border: 'none',
+                                display: 'block',
+                                background: '#0e0f14',
+                              }}
+                            />
+                          )}
                         </div>
                       </div>
                     )}
@@ -3407,20 +3532,7 @@ export default class App extends React.Component<{}, AppState> {
                   <button
                     aria-label="Home"
                     onClick={() => {
-                      if (s.screen !== 'browse') {
-                        this.setState({ screen: 'browse', webviewSrc: '', webviewUrl: '', seq: null, q: '' })
-                        return
-                      }
-                      if (s.seq && (s.seq.phase === 'load' || s.seq.phase === 'done')) {
-                        this.setState({ seq: { ...s.seq, phase: 'rdown' }, sp: 0 })
-                      } else {
-                        this.setState({
-                          seq: { key: 'home', text: '', phase: 'rdown' },
-                          sp: 0,
-                          webviewSrc: '',
-                          webviewUrl: '',
-                        })
-                      }
+                      this.goHome()
                     }}
                     style={navStyle(s.screen === 'browse')}
                   >
@@ -3501,16 +3613,10 @@ export default class App extends React.Component<{}, AppState> {
                         this.setState({ screen: 'browse' })
                         return
                       }
-                      if (s.seq && (s.seq.phase === 'load' || s.seq.phase === 'done')) {
-                        this.setState({ seq: { ...s.seq, phase: 'rdown' }, sp: 0 })
-                      } else {
-                        this.setState({
-                          seq: { key: 'home', text: '', phase: 'rdown' },
-                          sp: 0,
-                          webviewSrc: '',
-                          webviewUrl: '',
-                        })
+                      if (hasNativeShell()) {
+                        requestGoBack()
                       }
+                      this.setState({ seq: { key: 'home', text: '', phase: 'rdown' }, sp: 0 })
                     }}
                     style={{
                       position: 'absolute',
@@ -3524,8 +3630,13 @@ export default class App extends React.Component<{}, AppState> {
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
+                      cursor: 'pointer',
                       filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
+                      transition: 'transform 0.12s ease',
                     }}
+                    onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
+                    onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
                   >
                     <span style={{ position: 'relative', display: 'block', width: 32, height: 32 }}>
                       <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" style={hbStyle}>
@@ -3537,7 +3648,7 @@ export default class App extends React.Component<{}, AppState> {
                     </span>
                   </button>
 
-                  {/* Back / Forward chevrons */}
+                  {/* Back / Forward chevrons (<>) */}
                   <div
                     style={{
                       position: 'absolute',
@@ -3545,79 +3656,119 @@ export default class App extends React.Component<{}, AppState> {
                       top: 48,
                       zIndex: 40,
                       display: 'flex',
-                      gap: 0,
-                      opacity:
-                        (showResults || ph === 'done')
-                          ? 1
-                          : ph === 'rdown'
-                            ? Math.min(1, Math.max(0, 1 - (barOff + 512) / 132))
-                            : 0,
-                      pointerEvents: (showResults || ph === 'done') ? 'auto' : 'none',
-                      transition: 'opacity 0.2s ease',
+                      gap: 2,
+                      opacity: chevOp,
+                      pointerEvents: chevPe,
+                      transform: `translateX(${Math.round((1 - chevOp) * -16)}px)`,
+                      transition: 'opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
                   >
                     <button
                       aria-label="Back"
+                      disabled={!canGoBack}
                       onClick={() => {
                         if (s.screen !== 'browse') {
                           this.setState({ screen: 'browse' })
                           return
                         }
-                        try {
-                          const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
-                          if (iframe?.contentWindow && window.history.length > 1) {
-                            iframe.contentWindow.history.back()
-                            return
+                        const curTab = s.tabs[s.ci]
+                        const hist = curTab ? this.tabHistories[curTab.id] : undefined
+                        if (hist && hist.index > 0) {
+                          // Navigate back in this tab's history
+                          hist.index -= 1
+                          const prevText = hist.stack[hist.index]
+                          const target = resolveWebTarget(prevText)
+                          if (hasNativeShell()) {
+                            requestGoBack()
                           }
-                        } catch {}
-                        if (s.seq && (s.seq.phase === 'load' || s.seq.phase === 'done')) {
-                          this.setState({ seq: { ...s.seq, phase: 'rdown' }, sp: 0 })
-                        } else {
                           this.setState({
-                            seq: { key: 'home', text: '', phase: 'rdown' },
-                            sp: 0,
-                            webviewSrc: '',
-                            webviewUrl: '',
-                          })
+                            q: prevText,
+                            webviewSrc: target.src,
+                            webviewUrl: target.url,
+                            tabs: s.tabs.map((t, i) => (i === s.ci ? { ...t, text: prevText } : t)),
+                            seq: { key: 'restore', text: prevText, phase: 'done', t0: Date.now() },
+                            sp: 1,
+                          }, this.syncBrowserPane)
+                          this.handleVideoDetected(prevText)
+                          return
+                        }
+
+                        // Otherwise at beginning of tab's history: animate back to Home like the mockup
+                        if (hasNativeShell()) {
+                          requestGoBack()
+                        }
+                        this.setState({ seq: { key: 'home', text: '', phase: 'rdown' }, sp: 0 })
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 40,
+                        height: 60,
+                        background: 'none',
+                        color: '#e8eaf0',
+                        filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
+                        opacity: canGoBack ? 1 : 0.32,
+                        cursor: canGoBack ? 'pointer' : 'default',
+                        transition: 'transform 0.12s ease',
+                      }}
+                      onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
+                      onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
+                      onMouseLeave={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
+                    >
+                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M15 5l-7 7 7 7" />
+                      </svg>
+                    </button>
+                    <button
+                      aria-label="Forward"
+                      disabled={!canGoForward}
+                      onClick={() => {
+                        if (!canGoForward) return
+                        if (s.screen !== 'browse') {
+                          this.setState({ screen: 'browse' })
+                          return
+                        }
+                        const curTab = s.tabs[s.ci]
+                        const hist = curTab ? this.tabHistories[curTab.id] : undefined
+                        if (hist && hist.index < hist.stack.length - 1) {
+                          hist.index += 1
+                          const nextText = hist.stack[hist.index]
+                          const target = resolveWebTarget(nextText)
+                          if (hasNativeShell()) {
+                            requestGoForward()
+                          }
+                          this.setState({
+                            q: nextText,
+                            webviewSrc: target.src,
+                            webviewUrl: target.url,
+                            tabs: s.tabs.map((t, i) => (i === s.ci ? { ...t, text: nextText } : t)),
+                            seq: { key: 'restore', text: nextText, phase: 'done', t0: Date.now() },
+                            sp: 1,
+                          }, this.syncBrowserPane)
+                          this.handleVideoDetected(nextText)
+                        } else if (hasNativeShell()) {
+                          requestGoForward()
                         }
                       }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
-                        width: 38,
+                        width: 40,
                         height: 60,
                         background: 'none',
                         color: '#e8eaf0',
                         filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
+                        opacity: canGoForward ? 1 : 0.32,
+                        cursor: canGoForward ? 'pointer' : 'default',
+                        transition: 'transform 0.12s ease, opacity 0.15s ease',
                       }}
+                      onMouseDown={(e) => { if (canGoForward) e.currentTarget.style.transform = 'scale(0.92)' }}
+                      onMouseUp={(e) => { if (canGoForward) e.currentTarget.style.transform = 'scale(1)' }}
+                      onMouseLeave={(e) => { if (canGoForward) e.currentTarget.style.transform = 'scale(1)' }}
                     >
-                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M15 5l-7 7 7 7" />
-                      </svg>
-                    </button>
-                    <button
-                      aria-label="Forward"
-                      onClick={() => {
-                        try {
-                          const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
-                          if (iframe?.contentWindow) iframe.contentWindow.history.forward()
-                        } catch {}
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        width: 38,
-                        height: 60,
-                        background: 'none',
-                        color: '#e8eaf0',
-                        filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
-                        opacity: 0.85,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                         <path d="M9 5l7 7-7 7" />
                       </svg>
                     </button>

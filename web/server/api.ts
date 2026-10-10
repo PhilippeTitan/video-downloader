@@ -10,106 +10,12 @@ export interface SearchResult {
   url: string
 }
 
-const SAMPLE_VIDEO_DATABASE: Array<SearchResult & { tags: string[] }> = [
-  {
-    id: 'bbb_1080p',
-    title: 'Big Buck Bunny (Blender Foundation 4K)',
-    duration: '9:56',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/BigBuckBunny.jpg',
-    channel: 'Blender Animation Studio',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-    tags: ['bunny', 'animation', '4k', 'open source', 'funny', 'cartoon', 'animals', 'movie', 'film', 'hd'],
-  },
-  {
-    id: 'elephants_dream',
-    title: 'Elephants Dream (Sci-Fi CGI VFX)',
-    duration: '10:53',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/ElephantsDream.jpg',
-    channel: 'Orange Open Movie Project',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4',
-    tags: ['sci-fi', 'cgi', 'vfx', 'robots', 'movie', 'surreal', '3d', 'elephants', 'dream'],
-  },
-  {
-    id: 'tears_of_steel',
-    title: 'Tears of Steel (VFX Post-Apocalyptic)',
-    duration: '12:14',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/TearsOfSteel.jpg',
-    channel: 'Mango Open Movie',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-    tags: ['vfx', 'action', 'sci-fi', 'film', 'apocalypse', 'robots', 'future', 'amsterdam', 'tears'],
-  },
-  {
-    id: 'for_bigger_blazes',
-    title: 'For Bigger Blazes (Action Trailer 4K)',
-    duration: '0:15',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/ForBiggerBlazes.jpg',
-    channel: 'Chromecast Ultra 4K',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-    tags: ['action', 'trailer', 'fire', 'blazes', 'chromecast', '4k', 'speed'],
-  },
-  {
-    id: 'for_bigger_escape',
-    title: 'For Bigger Escape (Adventure Cinematic)',
-    duration: '0:15',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/ForBiggerEscapes.jpg',
-    channel: 'Chromecast Ultra 4K',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
-    tags: ['escape', 'adventure', 'travel', 'nature', 'ocean', 'outdoor', 'scenic'],
-  },
-  {
-    id: 'for_bigger_fun',
-    title: 'For Bigger Fun (Music & Dance Clip)',
-    duration: '1:00',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/ForBiggerFun.jpg',
-    channel: 'Chromecast Music',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
-    tags: ['music', 'lofi', 'dance', 'fun', 'beats', 'soundtrack', 'party', 'vibes'],
-  },
-  {
-    id: 'subaru_outback',
-    title: 'All-Terrain Wilderness Journey 4K',
-    duration: '0:30',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/SubaruOutbackSeeTheWorld.jpg',
-    channel: 'Adventure Motors',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/SubaruOutbackSeeTheWorld.mp4',
-    tags: ['cars', 'nature', 'wilderness', 'drive', 'mountains', 'travel', 'road trip'],
-  },
-  {
-    id: 'bullrun',
-    title: 'We Are Going On Bullrun (Action Road Documentary)',
-    duration: '0:47',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/WeAreGoingOnBullrun.jpg',
-    channel: 'Rally Channel',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4',
-    tags: ['cars', 'racing', 'supercars', 'bullrun', 'speed', 'documentary'],
-  },
-  {
-    id: 'sintel_trailer',
-    title: 'Sintel (Fantasy Dragon Animation HD)',
-    duration: '0:52',
-    thumbnail: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/Sintel.jpg',
-    channel: 'Durian Open Movie',
-    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-    tags: ['fantasy', 'dragon', 'sintel', 'anime', 'animation', 'character', 'movie'],
-  },
-]
-
 export async function searchVideos(query: string): Promise<SearchResult[]> {
-  const cleanQ = query.trim().toLowerCase()
-  if (!cleanQ) {
-    return SAMPLE_VIDEO_DATABASE.map((v) => ({
-      id: v.id,
-      title: v.title,
-      duration: v.duration,
-      thumbnail: v.thumbnail,
-      channel: v.channel,
-      url: v.url,
-    }))
-  }
+  const cleanQ = query.trim() || 'trending'
 
-  // 1. Try real YouTube search scraping
+  // Live YouTube search scraping
   try {
-    const encoded = encodeURIComponent(query)
+    const encoded = encodeURIComponent(cleanQ)
     const res = await fetch(`https://www.youtube.com/results?search_query=${encoded}`, {
       headers: {
         'User-Agent':
@@ -160,12 +66,12 @@ export async function searchVideos(query: string): Promise<SearchResult[]> {
       }
     }
   } catch (err) {
-    console.warn('[server] Live YouTube search fallback engaged:', err)
+    console.warn('[server] Live YouTube search error:', err)
   }
 
-  // 2. Fallback: Internet Archive public video library (real video stream files)
+  // Fallback: Internet Archive public library
   try {
-    const encoded = encodeURIComponent(query)
+    const encoded = encodeURIComponent(cleanQ)
     const archiveRes = await fetch(
       `https://archive.org/advancedsearch.php?q=(${encoded}+OR+title:${encoded})+AND+mediatype:movies&fl[]=identifier,title,description,creator,runtime&sort[]=downloads+desc&rows=16&output=json`
     )
@@ -177,7 +83,7 @@ export async function searchVideos(query: string): Promise<SearchResult[]> {
         .map((doc: any) => ({
           id: doc.identifier,
           title: doc.title,
-          duration: doc.runtime || 'Video',
+          duration: doc.runtime || '',
           thumbnail: `https://archive.org/services/img/${doc.identifier}`,
           channel: doc.creator || 'Archive Movies',
           url: `https://archive.org/download/${doc.identifier}/${doc.identifier}.mp4`,
@@ -185,42 +91,16 @@ export async function searchVideos(query: string): Promise<SearchResult[]> {
       if (items.length > 0) return items
     }
   } catch (err) {
-    console.warn('[server] Archive.org search fallback engaged:', err)
+    console.warn('[server] Archive.org search fallback error:', err)
   }
 
-  // 3. Query matching against sample video catalog (without fake mangling)
-  const matched = SAMPLE_VIDEO_DATABASE.filter((item) => {
-    const inTitle = item.title.toLowerCase().includes(cleanQ)
-    const inChannel = (item.channel || '').toLowerCase().includes(cleanQ)
-    const inTags = item.tags.some((t) => cleanQ.includes(t) || t.includes(cleanQ))
-    return inTitle || inChannel || inTags
-  })
-
-  if (matched.length > 0) {
-    return matched.map((v) => ({
-      id: v.id,
-      title: v.title,
-      duration: v.duration,
-      thumbnail: v.thumbnail,
-      channel: v.channel,
-      url: v.url,
-    }))
-  }
-
-  return SAMPLE_VIDEO_DATABASE.map((v) => ({
-    id: v.id,
-    title: v.title,
-    duration: v.duration,
-    thumbnail: v.thumbnail,
-    channel: v.channel,
-    url: v.url,
-  }))
+  return []
 }
 
 export async function analyzeVideoUrl(url: string) {
   let title = 'Detected Media Video'
-  let thumbnail = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/images/BigBuckBunny.jpg'
-  let durationSec = 596
+  let thumbnail = ''
+  let durationSec = 0
   let isAudio = false
 
   try {
@@ -231,23 +111,17 @@ export async function analyzeVideoUrl(url: string) {
         if (data?.title) title = data.title
         if (data?.thumbnail_url) thumbnail = data.thumbnail_url
       }
-    } else {
-      const matchedSample = SAMPLE_VIDEO_DATABASE.find((s) => s.url === url)
-      if (matchedSample) {
-        title = matchedSample.title
-        thumbnail = matchedSample.thumbnail
-        if (matchedSample.duration) {
-          const parts = matchedSample.duration.split(':').map(Number)
-          if (parts.length === 2) durationSec = parts[0] * 60 + parts[1]
-        }
-      } else if (url.endsWith('.mp4') || url.endsWith('.mov') || url.endsWith('.webm')) {
-        const fileName = url.split('/').pop()?.split('?')[0] || 'Media Video'
-        title = decodeURIComponent(fileName).replace(/[-_+]/g, ' ')
-      } else if (url.endsWith('.m4a') || url.endsWith('.mp3')) {
-        isAudio = true
-        const fileName = url.split('/').pop()?.split('?')[0] || 'Audio Track'
-        title = decodeURIComponent(fileName).replace(/[-_+]/g, ' ')
+      const vidMatch = url.match(/(?:v=|embed\/|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
+      if (vidMatch && !thumbnail) {
+        thumbnail = `https://i.ytimg.com/vi/${vidMatch[1]}/hqdefault.jpg`
       }
+    } else if (url.endsWith('.mp4') || url.endsWith('.mov') || url.endsWith('.webm')) {
+      const fileName = url.split('/').pop()?.split('?')[0] || 'Media Video'
+      title = decodeURIComponent(fileName).replace(/[-_+]/g, ' ')
+    } else if (url.endsWith('.m4a') || url.endsWith('.mp3')) {
+      isAudio = true
+      const fileName = url.split('/').pop()?.split('?')[0] || 'Audio Track'
+      title = decodeURIComponent(fileName).replace(/[-_+]/g, ' ')
     }
   } catch (err) {
     console.warn('[server] Error analyzing URL:', err)
@@ -309,7 +183,7 @@ export function handleApiMiddleware(req: IncomingMessage, res: ServerResponse, n
     const isDirectVideo = /\.(mp4|mov|webm|m4v|m3u8)(\?|$)/i.test(q)
 
     if (isDirectVideo) {
-      const html = generateDirectVideoPageHtml(q)
+      const html = generateDirectVideoPlayerHtml(q)
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
       res.setHeader('X-Frame-Options', 'ALLOWALL')
       res.end(html)
@@ -319,15 +193,15 @@ export function handleApiMiddleware(req: IncomingMessage, res: ServerResponse, n
     const ytMatch = q.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
     if (ytMatch) {
       const vidId = ytMatch[1]
-      const html = generateYouTubeEmbedPageHtml(vidId, q)
-      res.setHeader('Content-Type', 'text/html; charset=utf-8')
-      res.setHeader('X-Frame-Options', 'ALLOWALL')
-      res.end(html)
+      // Direct clean official YouTube embed player
+      const embedUrl = `https://www.youtube-nocookie.com/embed/${vidId}?autoplay=1&enablejsapi=1&playsinline=1`
+      res.writeHead(302, { Location: embedUrl })
+      res.end()
       return
     }
 
     searchVideos(q).then((results) => {
-      const html = generateSearchPageHtml(q, results)
+      const html = generateYouTubeSearchPageHtml(q, results)
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
       res.setHeader('X-Frame-Options', 'ALLOWALL')
       res.end(html)
@@ -341,108 +215,36 @@ export function handleApiMiddleware(req: IncomingMessage, res: ServerResponse, n
   next()
 }
 
-function generateDirectVideoPageHtml(videoUrl: string): string {
+function generateDirectVideoPlayerHtml(videoUrl: string): string {
   const fileName = decodeURIComponent(videoUrl.split('/').pop()?.split('?')[0] || 'Media Video')
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${escapeHtml(fileName)} - Player</title>
+  <title>${escapeHtml(fileName)}</title>
   <style>
-    body {
+    html, body {
       margin: 0;
-      padding: 20px;
-      background: #0b0c10;
-      color: #e8eaf0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      box-sizing: border-box;
-    }
-    .video-frame {
+      padding: 0;
       width: 100%;
-      max-width: 720px;
-      border-radius: 18px;
-      overflow: hidden;
+      height: 100%;
       background: #000;
-      box-shadow: 0 16px 40px rgba(0,0,0,0.6);
-      border: 1px solid #232736;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
     }
     video {
       width: 100%;
-      display: block;
-      max-height: 480px;
-    }
-    .meta-bar {
-      width: 100%;
-      max-width: 720px;
-      margin-top: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      background: #181a22;
-      padding: 14px 20px;
-      border-radius: 16px;
-      border: 1px solid #232736;
-      box-sizing: border-box;
-    }
-    .title {
-      font-size: 16px;
-      font-weight: 700;
-    }
-    .url {
-      font-size: 12px;
-      color: #9aa3b2;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 380px;
-    }
-    .dl-btn {
-      padding: 10px 20px;
-      border-radius: 20px;
-      background: #7c5cff;
-      color: #fff;
-      border: none;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      box-shadow: 0 4px 14px rgba(124,92,255,0.4);
-    }
-    .dl-btn:hover {
-      background: #6c47ff;
+      height: 100%;
+      object-fit: contain;
     }
   </style>
 </head>
 <body>
-  <div class="video-frame">
-    <video src="${escapeHtml(videoUrl)}" controls autoplay playsinline></video>
-  </div>
-  <div class="meta-bar">
-    <div>
-      <div class="title">${escapeHtml(fileName)}</div>
-      <div class="url">${escapeHtml(videoUrl)}</div>
-    </div>
-    <button class="dl-btn" onclick="triggerDownload()">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
-      <span>Download</span>
-    </button>
-  </div>
+  <video src="${escapeHtml(videoUrl)}" controls autoplay playsinline></video>
   <script>
-    function triggerDownload() {
-      window.parent.postMessage({
-        source: 'vd-browser',
-        type: 'select-video',
-        payload: { url: '${escapeHtml(videoUrl)}', title: '${escapeHtml(fileName)}' }
-      }, '*');
-    }
-    // Auto-detect on load
     window.parent.postMessage({
       source: 'vd-browser',
       type: 'detect',
@@ -453,142 +255,16 @@ function generateDirectVideoPageHtml(videoUrl: string): string {
 </html>`
 }
 
-function generateYouTubeEmbedPageHtml(vidId: string, originalUrl: string): string {
-  const embedUrl = `https://www.youtube-nocookie.com/embed/${vidId}?autoplay=1&enablejsapi=1`
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>YouTube Player</title>
-  <style>
-    body {
-      margin: 0;
-      padding: 16px;
-      background: #0b0c10;
-      color: #e8eaf0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      box-sizing: border-box;
-      min-height: 100vh;
-    }
-    .video-frame {
-      width: 100%;
-      max-width: 800px;
-      aspect-ratio: 16 / 9;
-      border-radius: 18px;
-      overflow: hidden;
-      background: #000;
-      box-shadow: 0 16px 40px rgba(0,0,0,0.6);
-      border: 1px solid #232736;
-    }
-    iframe {
-      width: 100%;
-      height: 100%;
-      border: none;
-      display: block;
-    }
-    .meta-bar {
-      width: 100%;
-      max-width: 800px;
-      margin-top: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      background: #181a22;
-      padding: 14px 20px;
-      border-radius: 16px;
-      border: 1px solid #232736;
-      box-sizing: border-box;
-    }
-    .title {
-      font-size: 16px;
-      font-weight: 700;
-    }
-    .url {
-      font-size: 12px;
-      color: #9aa3b2;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 480px;
-    }
-    .dl-btn {
-      padding: 10px 20px;
-      border-radius: 20px;
-      background: #7c5cff;
-      color: #fff;
-      border: none;
-      font-size: 14px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      box-shadow: 0 4px 14px rgba(124,92,255,0.4);
-    }
-    .dl-btn:hover {
-      background: #6c47ff;
-    }
-  </style>
-</head>
-<body>
-  <div class="video-frame">
-    <iframe src="${embedUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
-  </div>
-  <div class="meta-bar">
-    <div>
-      <div class="title" id="video-title">YouTube Video (${escapeHtml(vidId)})</div>
-      <div class="url">${escapeHtml(originalUrl)}</div>
-    </div>
-    <button class="dl-btn" onclick="triggerDownload()">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
-      <span>Download</span>
-    </button>
-  </div>
-  <script>
-    var original = '${escapeHtml(originalUrl)}';
-    var vidId = '${escapeHtml(vidId)}';
-    function triggerDownload() {
-      window.parent.postMessage({
-        source: 'vd-browser',
-        type: 'select-video',
-        payload: { url: original, title: 'YouTube Video (' + vidId + ')' }
-      }, '*');
-    }
-    // Auto-detect on load
-    window.parent.postMessage({
-      source: 'vd-browser',
-      type: 'detect',
-      payload: { url: original, kind: 'video', title: 'YouTube Video (' + vidId + ')' }
-    }, '*');
-  </script>
-</body>
-</html>`
-}
-
-function generateSearchPageHtml(query: string, results: SearchResult[]): string {
-  const cardsHtml = results.map((item) => `
-    <div class="video-card" onclick="openVideo('${item.url}', '${escapeHtml(item.title)}', '${item.thumbnail}')">
-      <div class="thumb-wrap">
+function generateYouTubeSearchPageHtml(query: string, results: SearchResult[]): string {
+  const listItems = results.map((item) => `
+    <div class="video-row" onclick="playVideo('${item.id}', '${escapeHtml(item.title)}', '${item.thumbnail}')">
+      <div class="thumb-container">
         <img src="${item.thumbnail}" alt="" loading="lazy" />
-        ${item.duration ? `<span class="duration-badge">${item.duration}</span>` : ''}
-        <div class="play-btn-hover">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="#ffffff"><path d="M8 5v14l11-7z"/></svg>
-        </div>
+        ${item.duration ? `<span class="duration-badge">${escapeHtml(item.duration)}</span>` : ''}
       </div>
-      <div class="meta-wrap">
+      <div class="video-info">
         <div class="video-title">${escapeHtml(item.title)}</div>
-        <div class="channel-name">${escapeHtml(item.channel || 'Video Provider')}</div>
-        <div class="card-action">
-          <button class="detect-cta" onclick="event.stopPropagation(); openVideo('${item.url}', '${escapeHtml(item.title)}', '${item.thumbnail}')">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
-            <span>Watch &amp; Download</span>
-          </button>
-        </div>
+        <div class="channel-name">${escapeHtml(item.channel || 'YouTube')}</div>
       </div>
     </div>
   `).join('\n')
@@ -597,330 +273,229 @@ function generateSearchPageHtml(query: string, results: SearchResult[]): string 
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${escapeHtml(query)} - Web Video Search</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>YouTube - ${escapeHtml(query)}</title>
   <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0;
-      padding: 16px;
-      background: #0e0f14;
-      color: #e8eaf0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      box-sizing: border-box;
+      background: #0f0f0f;
+      color: #f1f1f1;
+      font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       -webkit-font-smoothing: antialiased;
     }
-    .header-bar {
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(15, 15, 15, 0.98);
+      backdrop-filter: blur(12px);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      margin-bottom: 18px;
-      padding-bottom: 14px;
-      border-bottom: 1px solid #232736;
+      padding: 12px 16px;
       gap: 12px;
-      flex-wrap: wrap;
+      border-bottom: 1px solid #272727;
     }
-    .search-title {
-      font-size: 18px;
-      font-weight: 700;
+    .yt-icon {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 4px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: #fff;
     }
-    .search-title span {
-      color: #b7a6ff;
-    }
-    .results-count {
-      font-size: 13px;
-      color: #9aa3b2;
-      background: #181a24;
-      padding: 4px 10px;
-      border-radius: 12px;
-      border: 1px solid #272a38;
-    }
-    .in-page-search {
-      display: flex;
-      gap: 8px;
-      width: 100%;
-      max-width: 380px;
-    }
-    .in-page-search input {
+    .search-bar {
       flex: 1;
-      height: 38px;
-      background: #181a24;
-      border: 1px solid #2a2e40;
-      border-radius: 12px;
-      padding: 0 14px;
+      display: flex;
+      background: #121212;
+      border: 1px solid #303030;
+      border-radius: 20px;
+      overflow: hidden;
+    }
+    .search-bar input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      padding: 8px 16px;
       color: #fff;
       font-size: 14px;
       outline: none;
     }
-    .in-page-search input:focus {
-      border-color: #7c5cff;
-    }
-    .in-page-search button {
-      height: 38px;
-      padding: 0 16px;
-      background: #7c5cff;
+    .search-bar button {
+      background: #222;
       border: none;
-      border-radius: 12px;
-      color: #fff;
-      font-size: 13px;
-      font-weight: 600;
+      padding: 0 16px;
+      color: #aaa;
       cursor: pointer;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-      gap: 16px;
-    }
-    .video-card {
-      background: #161821;
-      border-radius: 16px;
-      overflow: hidden;
-      cursor: pointer;
-      border: 1px solid #232738;
-      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
-      display: flex;
-      flex-direction: column;
-    }
-    .video-card:hover {
-      transform: translateY(-3px);
-      border-color: #7c5cff;
-      box-shadow: 0 8px 24px rgba(124,92,255,0.25);
-    }
-    .thumb-wrap {
-      position: relative;
-      width: 100%;
-      height: 145px;
-      background: #10121a;
-      overflow: hidden;
-    }
-    .thumb-wrap img {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      transition: transform 0.25s ease;
-    }
-    .video-card:hover .thumb-wrap img {
-      transform: scale(1.04);
-    }
-    .duration-badge {
-      position: absolute;
-      bottom: 8px;
-      right: 8px;
-      background: rgba(10, 11, 16, 0.88);
-      color: #fff;
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 7px;
-      border-radius: 6px;
-      letter-spacing: 0.3px;
-    }
-    .play-btn-hover {
-      position: absolute;
-      inset: 0;
-      background: rgba(124, 92, 255, 0.35);
       display: flex;
       align-items: center;
       justify-content: center;
-      opacity: 0;
-      transition: opacity 0.18s ease;
     }
-    .video-card:hover .play-btn-hover {
-      opacity: 1;
-    }
-    .meta-wrap {
-      padding: 12px 14px 14px;
+    .feed {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 12px 16px 80px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 16px;
+    }
+    .video-row {
+      display: flex;
+      gap: 14px;
+      cursor: pointer;
+      border-radius: 12px;
+      padding: 8px;
+      transition: background 0.15s ease;
+    }
+    .video-row:hover {
+      background: #272727;
+    }
+    .thumb-container {
+      position: relative;
+      flex: 0 0 168px;
+      width: 168px;
+      height: 94px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #202020;
+    }
+    .thumb-container img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .duration-badge {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      background: rgba(0,0,0,0.8);
+      font-size: 11px;
+      font-weight: 500;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    .video-info {
       flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
     }
     .video-title {
       font-size: 14px;
-      font-weight: 600;
+      font-weight: 500;
       line-height: 1.35;
+      color: #f1f1f1;
       display: -webkit-box;
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
-      color: #edf0f8;
     }
     .channel-name {
       font-size: 12px;
-      color: #9aa3b2;
+      color: #aaa;
     }
-    .card-action {
-      margin-top: auto;
-      padding-top: 8px;
-    }
-    .detect-cta {
-      width: 100%;
-      padding: 8px 12px;
-      border-radius: 10px;
-      background: #252345;
-      color: #c4b5ff;
-      border: 1px solid #7c5cff;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: background 0.15s, color 0.15s;
-    }
-    .detect-cta:hover {
-      background: #7c5cff;
-      color: #fff;
-    }
-    /* Preview Modal */
-    #preview-modal {
+    #active-player {
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.85);
-      z-index: 100;
-      padding: 20px;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 12px;
-    }
-    #preview-video {
-      max-width: 90%;
-      max-height: 70vh;
-      border-radius: 14px;
       background: #000;
-      box-shadow: 0 12px 36px rgba(0,0,0,0.8);
+      z-index: 100;
+      flex-direction: column;
     }
-    .modal-bar {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-    }
-    .modal-btn {
-      padding: 10px 20px;
-      border-radius: 16px;
+    #active-player iframe {
+      width: 100%;
+      height: 100%;
       border: none;
-      font-weight: 700;
-      font-size: 14px;
+    }
+    .player-back-bar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 101;
+    }
+    .player-back-bar button {
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .empty-state {
+      padding: 40px;
+      text-align: center;
+      color: #888;
+      font-size: 14px;
     }
   </style>
 </head>
 <body>
-  <div class="header-bar">
-    <div class="search-title">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#7c5cff" stroke-width="2.2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
-      <div>Results for <span>"${escapeHtml(query)}"</span></div>
+  <div class="header">
+    <div class="yt-icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="#ff0000"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
+      <span>YouTube</span>
     </div>
-    <form class="in-page-search" onsubmit="handleInPageSearch(event)">
-      <input id="q-input" type="text" placeholder="Search another video…" value="${escapeHtml(query)}" />
-      <button type="submit">Search</button>
+    <form class="search-bar" onsubmit="onSearch(event)">
+      <input id="q-in" type="text" placeholder="Search YouTube" value="${escapeHtml(query)}" />
+      <button type="submit">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      </button>
     </form>
-    <div class="results-count">${results.length} videos found</div>
   </div>
 
-  <div class="grid">
-    ${cardsHtml}
+  <div class="feed">
+    ${listItems.length > 0 ? listItems : '<div class="empty-state">No videos found. Try another search.</div>'}
   </div>
 
-  <!-- Inline Preview Modal -->
-  <div id="preview-modal" onclick="closePreview(event)">
-    <video id="preview-video" controls playsinline></video>
-    <div class="modal-bar" onclick="event.stopPropagation()">
-      <button class="modal-btn" style="background:#2a2e40; color:#fff;" onclick="closePreview()">Close</button>
-      <button class="modal-btn" style="background:#7c5cff; color:#fff;" onclick="downloadCurrentPreview()">Save &amp; Download Video</button>
+  <div id="active-player">
+    <div class="player-back-bar">
+      <button onclick="closePlayer()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        <span>Back to results</span>
+      </button>
     </div>
+    <iframe id="player-frame" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
   </div>
 
   <script>
-    var currentItem = null;
+    function playVideo(id, title, thumbnail) {
+      var embedUrl = 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&enablejsapi=1&playsinline=1';
+      var videoPageUrl = 'https://www.youtube.com/watch?v=' + id;
 
-    function openVideo(url, title, thumbnail) {
-      currentItem = { url: url, title: title, thumbnail: thumbnail };
-
-      // Notify parent webview via postMessage
+      // Notify parent app of detected video so download pill appears
       window.parent.postMessage({
         source: 'vd-browser',
         type: 'detect',
         payload: {
-          url: url,
+          url: videoPageUrl,
           kind: 'video',
           title: title,
           thumbnail: thumbnail
         }
       }, '*');
 
-      window.parent.postMessage({
-        source: 'vd-browser',
-        type: 'select-video',
-        payload: { url: url, title: title, thumbnail: thumbnail }
-      }, '*');
-
-      var ytMatch = url.match(new RegExp('(?:youtube\\.com/(?:watch\\?v=|embed/)|youtu\\.be/)([a-zA-Z0-9_-]{11})'));
-      var modal = document.getElementById('preview-modal');
-      var vid = document.getElementById('preview-video');
-      var ytFrame = document.getElementById('preview-yt');
-
-      if (ytMatch) {
-        vid.style.display = 'none';
-        vid.pause();
-        vid.src = '';
-        if (!ytFrame) {
-          ytFrame = document.createElement('iframe');
-          ytFrame.id = 'preview-yt';
-          ytFrame.style.width = '100%';
-          ytFrame.style.maxWidth = '760px';
-          ytFrame.style.aspectRatio = '16/9';
-          ytFrame.style.borderRadius = '14px';
-          ytFrame.style.border = 'none';
-          ytFrame.allow = 'autoplay; encrypted-media';
-          modal.insertBefore(ytFrame, modal.firstChild);
-        }
-        ytFrame.style.display = 'block';
-        ytFrame.src = 'https://www.youtube-nocookie.com/embed/' + ytMatch[1] + '?autoplay=1';
-        modal.style.display = 'flex';
-      } else {
-        if (ytFrame) {
-          ytFrame.style.display = 'none';
-          ytFrame.src = '';
-        }
-        vid.style.display = 'block';
-        vid.src = url;
-        modal.style.display = 'flex';
-        vid.play().catch(function() {});
-      }
+      var modal = document.getElementById('active-player');
+      var iframe = document.getElementById('player-frame');
+      iframe.src = embedUrl;
+      modal.style.display = 'flex';
     }
 
-    function closePreview(e) {
-      var modal = document.getElementById('preview-modal');
-      var vid = document.getElementById('preview-video');
-      vid.pause();
-      vid.src = '';
-      var ytFrame = document.getElementById('preview-yt');
-      if (ytFrame) {
-        ytFrame.src = '';
-        ytFrame.style.display = 'none';
-      }
+    function closePlayer() {
+      var modal = document.getElementById('active-player');
+      var iframe = document.getElementById('player-frame');
+      iframe.src = '';
       modal.style.display = 'none';
     }
 
-    function downloadCurrentPreview() {
-      if (currentItem) {
-        window.parent.postMessage({
-          source: 'vd-browser',
-          type: 'select-video',
-          payload: currentItem
-        }, '*');
-      }
-      closePreview();
-    }
-
-    function handleInPageSearch(e) {
+    function onSearch(e) {
       e.preventDefault();
-      var q = document.getElementById('q-input').value.trim();
+      var q = document.getElementById('q-in').value.trim();
       if (!q) return;
       window.location.href = '/api/webview-search?q=' + encodeURIComponent(q);
       window.parent.postMessage({
@@ -930,7 +505,7 @@ function generateSearchPageHtml(query: string, results: SearchResult[]): string 
       }, '*');
     }
 
-    // Auto-detect first result on load
+    // Auto-detect first video if available
     if (${results.length > 0}) {
       setTimeout(function() {
         var first = ${JSON.stringify(results[0])};
