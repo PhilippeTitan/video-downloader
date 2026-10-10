@@ -370,29 +370,19 @@ export default class App extends React.Component<{}, AppState> {
     const query = (text || '').trim()
     if (!query) return
 
-    let webSrc = `/api/webview-search?q=${encodeURIComponent(query)}`
-    let webUrl = `search://${encodeURIComponent(query)}`
-    if (/^https?:\/\//i.test(query)) {
-      webSrc = query
-      webUrl = query
-    } else if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/i.test(query)) {
-      webSrc = `https://${query}`
-      webUrl = `https://${query}`
-    }
-
     const updatedTabs = this.state.tabs.length > 0
       ? this.state.tabs.map((tab, idx) => idx === this.state.ci ? { ...tab, text: query } : tab)
       : [{ id: 1, text: query }]
 
     const nextHist = [query, ...this.state.hist.filter((h) => h !== query)].slice(0, 8)
+    const isAlreadyUp = this.state.seq?.phase === 'done' || (!!this.state.webviewSrc && !this.state.seq)
+    const initialPhase = isAlreadyUp ? 'load' : 'fade'
 
     this.setState({
       screen: 'browse',
-      seq: { key: 'search:' + query, text: query, phase: 'done', t0: Date.now() },
-      sp: 1,
+      seq: { key: 'search:' + query, text: query, phase: initialPhase, t0: Date.now() },
+      sp: 0,
       q: query,
-      webviewSrc: webSrc,
-      webviewUrl: webUrl,
       tabs: updatedTabs,
       hist: nextHist,
     }, () => {
@@ -557,14 +547,14 @@ export default class App extends React.Component<{}, AppState> {
             up.sp = 0
           }
         } else if (s.seq.phase === 'scan') {
-          const p = Math.min(1, s.sp + (s.seq.skip ? 0.04 : 0.025))
+          const p = Math.min(1, s.sp + (s.seq.skip ? 0.08 : 0.045))
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: s.seq.skip ? 'done' : 'load', t0: Date.now() }
             up.sp = 0
           }
         } else if (s.seq.phase === 'load') {
-          const p = Math.min(1, s.sp + 0.02)
+          const p = Math.min(1, s.sp + 0.04)
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: 'done' }
@@ -578,12 +568,30 @@ export default class App extends React.Component<{}, AppState> {
             const txt = s.seq.text.trim()
             let webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
             let webUrl = `search://${encodeURIComponent(txt)}`
-            if (/^https?:\/\//i.test(txt)) {
-              webSrc = txt
+
+            const ytMatch = txt.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
+            if (ytMatch) {
+              webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
+              webUrl = `https://www.youtube.com/watch?v=${ytMatch[1]}`
+            } else if (/\.(mp4|mov|webm|m4v|m3u8)(\?|$)/i.test(txt)) {
+              webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
               webUrl = txt
+            } else if (/^https?:\/\//i.test(txt)) {
+              if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
+                webSrc = `/api/webview-search?q=${encodeURIComponent(txt)}`
+                webUrl = txt
+              } else {
+                webSrc = txt
+                webUrl = txt
+              }
             } else if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/i.test(txt)) {
-              webSrc = `https://${txt}`
-              webUrl = `https://${txt}`
+              if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
+                webSrc = `/api/webview-search?q=trending`
+                webUrl = `https://${txt}`
+              } else {
+                webSrc = `https://${txt}`
+                webUrl = `https://${txt}`
+              }
             }
             up.webviewSrc = webSrc
             up.webviewUrl = webUrl
@@ -1253,16 +1261,10 @@ export default class App extends React.Component<{}, AppState> {
     const status = sq ? 'Looking up ' + sq.text.slice(0, 40) + '…' : ''
     const qText = sq && ph === 'fade' ? sq.text.slice(0, Math.ceil(s.sp * sq.text.length)) : s.q
     const qAlpha = (ph === 'fade' ? 0.3 + 0.7 * s.sp : 1) * (1 - s.tsp)
-    const showResults = ph === 'done' || ph === 'rdown'
-    const resTop = s.tabs.length ? 164 : 140
-    const resOp = (ph === 'rdown' ? 1 : s.sp) * (1 - s.tsp)
-    const resY = ph === 'rdown' ? 0 : Math.round((1 - s.sp) * 16)
-    const resClip = ph === 'rdown' ? Math.max(0, Math.round(560 + barOff + 60 - resTop)) : 0
-    const isSiteRes = !!sq && /^\S+\.\S+$/.test(sq.text)
-    const isSearchRes = !!sq && !/^\S+\.\S+$/.test(sq.text)
-    const resTitle = sq ? sq.text.slice(0, 40) : ''
-    const pillLabel = first ? 'Downloading · ' + first.pct + '%' : 'Video detected'
-    const pillSub = first ? 'Tap to view queue' : '3 formats ready to save'
+    const showResults = (ph === 'done' || ph === 'rdown' || (!!s.webviewSrc && !s.seq)) && s.screen === 'browse'
+    const resOp = ph === 'rdown' ? 1 - s.sp : ph === 'done' ? s.sp : 1
+    const resY = ph === 'done' ? Math.round((1 - s.sp) * 16) : 0
+    const resTitle = sq ? sq.text : s.q || 'Web Search'
 
     const pageUp = !!sq && (ph === 'load' || ph === 'done')
     const curText = pageUp ? sq.text : ''
@@ -1828,7 +1830,7 @@ export default class App extends React.Component<{}, AppState> {
                   flex: 1,
                   position: 'relative',
                   overflow: 'hidden',
-                  padding: '0 108px',
+                  padding: (showResults && s.screen === 'browse') ? 0 : '0 108px',
                   boxSizing: 'border-box',
                 }}
               >
@@ -2206,6 +2208,8 @@ export default class App extends React.Component<{}, AppState> {
                         display: 'flex',
                         justifyContent: 'center',
                         transform: `translateY(${barOff}px)`,
+                        zIndex: 35,
+                        pointerEvents: 'auto',
                       }}
                     >
                       <div style={{ position: 'relative', width: '100%', maxWidth: barW }}>
@@ -2343,13 +2347,7 @@ export default class App extends React.Component<{}, AppState> {
                             if (e.key !== 'Enter') return
                             const t = (s.q || '').trim()
                             if (!t) return
-                            if (!s.seq)
-                              this.setState({ seq: { key: 'typed', text: t, phase: 'scan' }, sp: 0 })
-                            else if (s.seq.phase === 'done')
-                              this.setState({
-                                seq: { ...s.seq, phase: 'load', text: t, t0: Date.now() },
-                                sp: 0,
-                              })
+                            this.executeSearch(t)
                           }}
                           style={{
                             width: '100%',
@@ -2361,10 +2359,35 @@ export default class App extends React.Component<{}, AppState> {
                             color: `rgba(232,234,240,${qAlpha})`,
                             fontSize: 17,
                             fontFamily: 'inherit',
-                            padding: '0 24px 0 58px',
+                            padding: s.q ? '0 52px 0 58px' : '0 24px 0 58px',
                             boxShadow: '0 8px 28px rgba(0,0,0,.35)',
                           }}
                         />
+                        {s.q && (
+                          <button
+                            aria-label="Clear search"
+                            onClick={() => this.setState({ q: '' })}
+                            style={{
+                              position: 'absolute',
+                              right: 20,
+                              top: 20,
+                              width: 20,
+                              height: 20,
+                              borderRadius: 10,
+                              background: '#2d3142',
+                              color: '#9aa3b2',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              border: 0,
+                            }}
+                          >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+                              <path d="M18 6L6 18M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -2372,249 +2395,43 @@ export default class App extends React.Component<{}, AppState> {
                       <div
                         style={{
                           position: 'absolute',
-                          left: isSearchRes ? -84 : 0,
-                          right: isSearchRes ? -84 : 0,
-                          top: resTop,
-                          bottom: 24,
+                          left: 0,
+                          right: 0,
+                          top: 114,
+                          bottom: 0,
                           display: 'flex',
-                          justifyContent: 'center',
+                          flexDirection: 'column',
+                          background: '#0e0f14',
+                          zIndex: 15,
                           opacity: resOp,
                           transform: `translateY(${resY}px)`,
-                          clipPath: `inset(${resClip}px 0 0 0)`,
+                          transition: 'opacity 0.2s ease-out',
                         }}
                       >
+                        {/* Live Browser Surface — fills 100% of the space on the sides edge to edge like Safari */}
                         <div
+                          className="browser-slot"
                           style={{
+                            flex: 1,
                             width: '100%',
-                            maxWidth: isSearchRes ? 772 : 640,
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: 14,
+                            height: '100%',
+                            overflow: 'hidden',
+                            background: '#0d0e14',
+                            position: 'relative',
                           }}
                         >
-                          {isSiteRes && (
-                            <>
-                              <div style={{ fontSize: 13, color: '#9aa3b2' }}>{resTitle}</div>
-                              <div
-                                style={{
-                                  height: 300,
-                                  borderRadius: 24,
-                                  background: 'linear-gradient(135deg,#34304f,#1a1c27)',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  justifyContent: 'center',
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    borderLeft: '44px solid #e8eaf0',
-                                    borderTop: '26px solid transparent',
-                                    borderBottom: '26px solid transparent',
-                                    marginLeft: 10,
-                                    opacity: 0.85,
-                                  }}
-                                />
-                              </div>
-                              <button
-                                onClick={() =>
-                                  first ? this.setState({ screen: 'down' }) : this.setState({ sheet: true })
-                                }
-                                style={{
-                                  minHeight: 76,
-                                  padding: '0 20px',
-                                  borderRadius: 20,
-                                  background: '#7c5cff',
-                                  color: '#fff',
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 16,
-                                  textAlign: 'left',
-                                }}
-                              >
-                                <span style={{ flex: 1 }}>
-                                  <span style={{ display: 'block', fontSize: 16, fontWeight: 600 }}>
-                                    {pillLabel}
-                                  </span>
-                                  <span style={{ display: 'block', fontSize: 13, opacity: 0.9 }}>
-                                    {pillSub}
-                                  </span>
-                                </span>
-                                <span style={{ fontSize: 22 }}>›</span>
-                              </button>
-                              <div style={{ width: '70%', height: 10, borderRadius: 5, background: '#1d2029' }} />
-                              <div style={{ width: '50%', height: 10, borderRadius: 5, background: '#1d2029' }} />
-                            </>
-                          )}
-                          {isSearchRes && (
-                            <div
-                              style={{
-                                width: '100%',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: 12,
-                                height: '100%',
-                                minHeight: 740,
-                              }}
-                            >
-                              {/* Safari-like unified top browser bar */}
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 12,
-                                  padding: '8px 14px',
-                                  borderRadius: 16,
-                                  background: '#191b24',
-                                  border: '1px solid #272a38',
-                                  boxShadow: '0 4px 16px rgba(0,0,0,0.25)',
-                                }}
-                              >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9aa3b2' }}>
-                                  <button
-                                    aria-label="Back"
-                                    onClick={() => {
-                                      try {
-                                        const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
-                                        if (iframe?.contentWindow) iframe.contentWindow.history.back()
-                                      } catch {}
-                                    }}
-                                    style={{
-                                      width: 28,
-                                      height: 28,
-                                      borderRadius: 8,
-                                      background: 'rgba(255,255,255,0.06)',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      color: '#e8eaf0',
-                                    }}
-                                  >
-                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M15 18l-6-6 6-6" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    aria-label="Forward"
-                                    onClick={() => {
-                                      try {
-                                        const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
-                                        if (iframe?.contentWindow) iframe.contentWindow.history.forward()
-                                      } catch {}
-                                    }}
-                                    style={{
-                                      width: 28,
-                                      height: 28,
-                                      borderRadius: 8,
-                                      background: 'rgba(255,255,255,0.06)',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      color: '#e8eaf0',
-                                    }}
-                                  >
-                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M9 18l6-6-6-6" />
-                                    </svg>
-                                  </button>
-                                  <button
-                                    aria-label="Reload"
-                                    onClick={() => {
-                                      try {
-                                        const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
-                                        if (iframe?.contentWindow) iframe.contentWindow.location.reload()
-                                      } catch {}
-                                    }}
-                                    style={{
-                                      width: 28,
-                                      height: 28,
-                                      borderRadius: 8,
-                                      background: 'rgba(255,255,255,0.06)',
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      color: '#e8eaf0',
-                                    }}
-                                  >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19" />
-                                    </svg>
-                                  </button>
-                                </div>
-
-                                <div
-                                  style={{
-                                    flex: 1,
-                                    height: 32,
-                                    borderRadius: 10,
-                                    background: '#111218',
-                                    border: '1px solid #232736',
-                                    padding: '0 12px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 8,
-                                    fontSize: 13,
-                                    color: '#c9cedb',
-                                  }}
-                                >
-                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7c5cff" strokeWidth="2.4" style={{ flex: 'none' }}>
-                                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                                    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                                  </svg>
-                                  <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', flex: 1 }}>
-                                    {s.webviewUrl || `https://youtube.com/results?search_query=${encodeURIComponent(resTitle)}`}
-                                  </span>
-                                </div>
-
-                                <button
-                                  onClick={() => this.setState({ sheet: true })}
-                                  style={{
-                                    padding: '6px 14px',
-                                    borderRadius: 10,
-                                    background: '#7c5cff',
-                                    color: '#fff',
-                                    fontSize: 13,
-                                    fontWeight: 600,
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: 6,
-                                  }}
-                                >
-                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
-                                    <path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14" />
-                                  </svg>
-                                  <span>Sniff Media</span>
-                                </button>
-                              </div>
-
-                              {/* Live Browser Surface — naturally fills the container without vertical side letterboxing */}
-                              <div
-                                className="browser-slot"
-                                style={{
-                                  flex: 1,
-                                  minHeight: 680,
-                                  borderRadius: 20,
-                                  overflow: 'hidden',
-                                  border: '1px solid #252837',
-                                  background: '#0d0e14',
-                                  boxShadow: '0 12px 36px rgba(0,0,0,0.45)',
-                                  position: 'relative',
-                                }}
-                              >
-                                <iframe
-                                  className="safari-webview-frame"
-                                  title="Browsing Session"
-                                  src={s.webviewSrc || `/api/webview-search?q=${encodeURIComponent(resTitle)}`}
-                                  style={{
-                                    width: '100%',
-                                    height: '100%',
-                                    border: 'none',
-                                    background: '#0e0f14',
-                                    borderRadius: 20,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          )}
+                          <iframe
+                            className="safari-webview-frame"
+                            title="Browsing Session"
+                            src={s.webviewSrc || `/api/webview-search?q=${encodeURIComponent(resTitle)}`}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              border: 'none',
+                              display: 'block',
+                              background: '#0e0f14',
+                            }}
+                          />
                         </div>
                       </div>
                     )}
@@ -3583,6 +3400,7 @@ export default class App extends React.Component<{}, AppState> {
                   display: 'flex',
                   alignItems: 'center',
                   pointerEvents: 'none',
+                  zIndex: 40,
                 }}
               >
                 <nav style={{ pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -3593,7 +3411,16 @@ export default class App extends React.Component<{}, AppState> {
                         this.setState({ screen: 'browse', webviewSrc: '', webviewUrl: '', seq: null, q: '' })
                         return
                       }
-                      this.setState({ webviewSrc: '', webviewUrl: '', seq: null, q: '' })
+                      if (s.seq && (s.seq.phase === 'load' || s.seq.phase === 'done')) {
+                        this.setState({ seq: { ...s.seq, phase: 'rdown' }, sp: 0 })
+                      } else {
+                        this.setState({
+                          seq: { key: 'home', text: '', phase: 'rdown' },
+                          sp: 0,
+                          webviewSrc: '',
+                          webviewUrl: '',
+                        })
+                      }
                     }}
                     style={navStyle(s.screen === 'browse')}
                   >
@@ -3676,6 +3503,13 @@ export default class App extends React.Component<{}, AppState> {
                       }
                       if (s.seq && (s.seq.phase === 'load' || s.seq.phase === 'done')) {
                         this.setState({ seq: { ...s.seq, phase: 'rdown' }, sp: 0 })
+                      } else {
+                        this.setState({
+                          seq: { key: 'home', text: '', phase: 'rdown' },
+                          sp: 0,
+                          webviewSrc: '',
+                          webviewUrl: '',
+                        })
                       }
                     }}
                     style={{
@@ -3684,6 +3518,7 @@ export default class App extends React.Component<{}, AppState> {
                       top: 48,
                       width: 60,
                       height: 60,
+                      zIndex: 40,
                       background: 'none',
                       color: '#e8eaf0',
                       display: 'flex',
@@ -3708,15 +3543,17 @@ export default class App extends React.Component<{}, AppState> {
                       position: 'absolute',
                       left: 86,
                       top: 48,
+                      zIndex: 40,
                       display: 'flex',
                       gap: 0,
                       opacity:
-                        ph === 'done'
-                          ? s.sp
+                        (showResults || ph === 'done')
+                          ? 1
                           : ph === 'rdown'
                             ? Math.min(1, Math.max(0, 1 - (barOff + 512) / 132))
                             : 0,
-                      pointerEvents: ph === 'done' && s.sp > 0.5 ? 'auto' : 'none',
+                      pointerEvents: (showResults || ph === 'done') ? 'auto' : 'none',
+                      transition: 'opacity 0.2s ease',
                     }}
                   >
                     <button
@@ -3726,8 +3563,22 @@ export default class App extends React.Component<{}, AppState> {
                           this.setState({ screen: 'browse' })
                           return
                         }
+                        try {
+                          const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
+                          if (iframe?.contentWindow && window.history.length > 1) {
+                            iframe.contentWindow.history.back()
+                            return
+                          }
+                        } catch {}
                         if (s.seq && (s.seq.phase === 'load' || s.seq.phase === 'done')) {
                           this.setState({ seq: { ...s.seq, phase: 'rdown' }, sp: 0 })
+                        } else {
+                          this.setState({
+                            seq: { key: 'home', text: '', phase: 'rdown' },
+                            sp: 0,
+                            webviewSrc: '',
+                            webviewUrl: '',
+                          })
                         }
                       }}
                       style={{
@@ -3747,7 +3598,12 @@ export default class App extends React.Component<{}, AppState> {
                     </button>
                     <button
                       aria-label="Forward"
-                      disabled
+                      onClick={() => {
+                        try {
+                          const iframe = document.querySelector('iframe.safari-webview-frame') as HTMLIFrameElement
+                          if (iframe?.contentWindow) iframe.contentWindow.history.forward()
+                        } catch {}
+                      }}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -3757,8 +3613,8 @@ export default class App extends React.Component<{}, AppState> {
                         background: 'none',
                         color: '#e8eaf0',
                         filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
-                        opacity: 0.35,
-                        cursor: 'default',
+                        opacity: 0.85,
+                        cursor: 'pointer',
                       }}
                     >
                       <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3768,7 +3624,7 @@ export default class App extends React.Component<{}, AppState> {
                   </div>
 
                   {/* Top Right: New Tab & Switcher */}
-                  <div style={{ position: 'absolute', right: 20, top: 48, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ position: 'absolute', right: 20, top: 48, zIndex: 40, display: 'flex', alignItems: 'center', gap: 6 }}>
                     <button
                       aria-label="New tab"
                       onClick={newTab}

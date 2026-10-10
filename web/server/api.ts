@@ -96,6 +96,16 @@ const SAMPLE_VIDEO_DATABASE: Array<SearchResult & { tags: string[] }> = [
 
 export async function searchVideos(query: string): Promise<SearchResult[]> {
   const cleanQ = query.trim().toLowerCase()
+  if (!cleanQ) {
+    return SAMPLE_VIDEO_DATABASE.map((v) => ({
+      id: v.id,
+      title: v.title,
+      duration: v.duration,
+      thumbnail: v.thumbnail,
+      channel: v.channel,
+      url: v.url,
+    }))
+  }
 
   // 1. Try real YouTube search scraping
   try {
@@ -103,63 +113,103 @@ export async function searchVideos(query: string): Promise<SearchResult[]> {
     const res = await fetch(`https://www.youtube.com/results?search_query=${encoded}`, {
       headers: {
         'User-Agent':
-          'Mozilla/5.0 (iPad; CPU OS 17_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.7 Mobile/15E148 Safari/604.1',
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.9',
       },
     })
     const html = await res.text()
-    const match = html.match(/var ytInitialData = (\{.*?\});<\/script>/)
-    if (match) {
-      const data = JSON.parse(match[1])
-      const contents =
-        data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer
-          ?.contents?.[0]?.itemSectionRenderer?.contents || []
-      const items: SearchResult[] = []
-      for (const item of contents) {
-        if (item.videoRenderer) {
-          const vr = item.videoRenderer
-          const id = vr.videoId
-          const title = vr.title?.runs?.[0]?.text || vr.title?.accessibility?.accessibilityData?.label || 'Video'
-          const duration = vr.lengthText?.simpleText || ''
-          const thumbnail =
-            vr.thumbnail?.thumbnails?.[vr.thumbnail.thumbnails.length - 1]?.url ||
-            `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
-          const channel = vr.ownerText?.runs?.[0]?.text || vr.shortBylineText?.runs?.[0]?.text || ''
-          items.push({
-            id,
-            title,
-            duration,
-            thumbnail,
-            channel,
-            url: `https://www.youtube.com/watch?v=${id}`,
-          })
+    const startIdx = html.indexOf('ytInitialData = ')
+    if (startIdx !== -1) {
+      const jsonStart = startIdx + 'ytInitialData = '.length
+      const endIdx = html.indexOf(';</script>', jsonStart)
+      if (endIdx !== -1) {
+        const data = JSON.parse(html.slice(jsonStart, endIdx))
+        const sectionList =
+          data.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || []
+        const items: SearchResult[] = []
+        for (const section of sectionList) {
+          const contents = section.itemSectionRenderer?.contents || []
+          for (const item of contents) {
+            if (item.videoRenderer) {
+              const vr = item.videoRenderer
+              const id = vr.videoId
+              const title =
+                vr.title?.runs?.[0]?.text ||
+                vr.title?.accessibility?.accessibilityData?.label ||
+                'Video'
+              const duration = vr.lengthText?.simpleText || ''
+              const thumbnail =
+                vr.thumbnail?.thumbnails?.[vr.thumbnail.thumbnails.length - 1]?.url ||
+                `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+              const channel =
+                vr.ownerText?.runs?.[0]?.text || vr.shortBylineText?.runs?.[0]?.text || 'YouTube Creator'
+              items.push({
+                id,
+                title,
+                duration,
+                thumbnail,
+                channel,
+                url: `https://www.youtube.com/watch?v=${id}`,
+              })
+            }
+          }
         }
-      }
-      if (items.length > 0) {
-        return items.slice(0, 15)
+        if (items.length > 0) {
+          return items.slice(0, 24)
+        }
       }
     }
   } catch (err) {
     console.warn('[server] Live YouTube search fallback engaged:', err)
   }
 
-  // 2. Query-intelligent matching against sample video catalog
+  // 2. Fallback: Internet Archive public video library (real video stream files)
+  try {
+    const encoded = encodeURIComponent(query)
+    const archiveRes = await fetch(
+      `https://archive.org/advancedsearch.php?q=(${encoded}+OR+title:${encoded})+AND+mediatype:movies&fl[]=identifier,title,description,creator,runtime&sort[]=downloads+desc&rows=16&output=json`
+    )
+    if (archiveRes.ok) {
+      const data = (await archiveRes.json()) as any
+      const docs = data?.response?.docs || []
+      const items: SearchResult[] = docs
+        .filter((d: any) => d.identifier && d.title)
+        .map((doc: any) => ({
+          id: doc.identifier,
+          title: doc.title,
+          duration: doc.runtime || 'Video',
+          thumbnail: `https://archive.org/services/img/${doc.identifier}`,
+          channel: doc.creator || 'Archive Movies',
+          url: `https://archive.org/download/${doc.identifier}/${doc.identifier}.mp4`,
+        }))
+      if (items.length > 0) return items
+    }
+  } catch (err) {
+    console.warn('[server] Archive.org search fallback engaged:', err)
+  }
+
+  // 3. Query matching against sample video catalog (without fake mangling)
   const matched = SAMPLE_VIDEO_DATABASE.filter((item) => {
-    if (!cleanQ || cleanQ === 'trending' || cleanQ === 'all') return true
     const inTitle = item.title.toLowerCase().includes(cleanQ)
     const inChannel = (item.channel || '').toLowerCase().includes(cleanQ)
     const inTags = item.tags.some((t) => cleanQ.includes(t) || t.includes(cleanQ))
     return inTitle || inChannel || inTags
   })
 
-  const results: SearchResult[] = matched.length > 0 ? matched : SAMPLE_VIDEO_DATABASE
+  if (matched.length > 0) {
+    return matched.map((v) => ({
+      id: v.id,
+      title: v.title,
+      duration: v.duration,
+      thumbnail: v.thumbnail,
+      channel: v.channel,
+      url: v.url,
+    }))
+  }
 
-  // If query is specific, customize titles to match user search intent
-  return results.map((v) => ({
+  return SAMPLE_VIDEO_DATABASE.map((v) => ({
     id: v.id,
-    title: cleanQ && cleanQ !== 'trending' && !v.title.toLowerCase().includes(cleanQ)
-      ? `${query.charAt(0).toUpperCase() + query.slice(1)} — ${v.title}`
-      : v.title,
+    title: v.title,
     duration: v.duration,
     thumbnail: v.thumbnail,
     channel: v.channel,
@@ -260,6 +310,16 @@ export function handleApiMiddleware(req: IncomingMessage, res: ServerResponse, n
 
     if (isDirectVideo) {
       const html = generateDirectVideoPageHtml(q)
+      res.setHeader('Content-Type', 'text/html; charset=utf-8')
+      res.setHeader('X-Frame-Options', 'ALLOWALL')
+      res.end(html)
+      return
+    }
+
+    const ytMatch = q.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
+    if (ytMatch) {
+      const vidId = ytMatch[1]
+      const html = generateYouTubeEmbedPageHtml(vidId, q)
       res.setHeader('Content-Type', 'text/html; charset=utf-8')
       res.setHeader('X-Frame-Options', 'ALLOWALL')
       res.end(html)
@@ -387,6 +447,123 @@ function generateDirectVideoPageHtml(videoUrl: string): string {
       source: 'vd-browser',
       type: 'detect',
       payload: { url: '${escapeHtml(videoUrl)}', kind: 'video', title: '${escapeHtml(fileName)}' }
+    }, '*');
+  </script>
+</body>
+</html>`
+}
+
+function generateYouTubeEmbedPageHtml(vidId: string, originalUrl: string): string {
+  const embedUrl = `https://www.youtube-nocookie.com/embed/${vidId}?autoplay=1&enablejsapi=1`
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YouTube Player</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      background: #0b0c10;
+      color: #e8eaf0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-sizing: border-box;
+      min-height: 100vh;
+    }
+    .video-frame {
+      width: 100%;
+      max-width: 800px;
+      aspect-ratio: 16 / 9;
+      border-radius: 18px;
+      overflow: hidden;
+      background: #000;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.6);
+      border: 1px solid #232736;
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      display: block;
+    }
+    .meta-bar {
+      width: 100%;
+      max-width: 800px;
+      margin-top: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: #181a22;
+      padding: 14px 20px;
+      border-radius: 16px;
+      border: 1px solid #232736;
+      box-sizing: border-box;
+    }
+    .title {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .url {
+      font-size: 12px;
+      color: #9aa3b2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 480px;
+    }
+    .dl-btn {
+      padding: 10px 20px;
+      border-radius: 20px;
+      background: #7c5cff;
+      color: #fff;
+      border: none;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 14px rgba(124,92,255,0.4);
+    }
+    .dl-btn:hover {
+      background: #6c47ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="video-frame">
+    <iframe src="${embedUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+  </div>
+  <div class="meta-bar">
+    <div>
+      <div class="title" id="video-title">YouTube Video (${escapeHtml(vidId)})</div>
+      <div class="url">${escapeHtml(originalUrl)}</div>
+    </div>
+    <button class="dl-btn" onclick="triggerDownload()">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>
+      <span>Download</span>
+    </button>
+  </div>
+  <script>
+    var original = '${escapeHtml(originalUrl)}';
+    var vidId = '${escapeHtml(vidId)}';
+    function triggerDownload() {
+      window.parent.postMessage({
+        source: 'vd-browser',
+        type: 'select-video',
+        payload: { url: original, title: 'YouTube Video (' + vidId + ')' }
+      }, '*');
+    }
+    // Auto-detect on load
+    window.parent.postMessage({
+      source: 'vd-browser',
+      type: 'detect',
+      payload: { url: original, kind: 'video', title: 'YouTube Video (' + vidId + ')' }
     }, '*');
   </script>
 </body>
@@ -682,10 +859,35 @@ function generateSearchPageHtml(query: string, results: SearchResult[]): string 
         payload: { url: url, title: title, thumbnail: thumbnail }
       }, '*');
 
-      // If it's a direct mp4, offer inline preview too
-      if (url.indexOf('.mp4') !== -1 || url.indexOf('commondatastorage') !== -1) {
-        var modal = document.getElementById('preview-modal');
-        var vid = document.getElementById('preview-video');
+      var ytMatch = url.match(new RegExp('(?:youtube\\.com/(?:watch\\?v=|embed/)|youtu\\.be/)([a-zA-Z0-9_-]{11})'));
+      var modal = document.getElementById('preview-modal');
+      var vid = document.getElementById('preview-video');
+      var ytFrame = document.getElementById('preview-yt');
+
+      if (ytMatch) {
+        vid.style.display = 'none';
+        vid.pause();
+        vid.src = '';
+        if (!ytFrame) {
+          ytFrame = document.createElement('iframe');
+          ytFrame.id = 'preview-yt';
+          ytFrame.style.width = '100%';
+          ytFrame.style.maxWidth = '760px';
+          ytFrame.style.aspectRatio = '16/9';
+          ytFrame.style.borderRadius = '14px';
+          ytFrame.style.border = 'none';
+          ytFrame.allow = 'autoplay; encrypted-media';
+          modal.insertBefore(ytFrame, modal.firstChild);
+        }
+        ytFrame.style.display = 'block';
+        ytFrame.src = 'https://www.youtube-nocookie.com/embed/' + ytMatch[1] + '?autoplay=1';
+        modal.style.display = 'flex';
+      } else {
+        if (ytFrame) {
+          ytFrame.style.display = 'none';
+          ytFrame.src = '';
+        }
+        vid.style.display = 'block';
         vid.src = url;
         modal.style.display = 'flex';
         vid.play().catch(function() {});
@@ -697,6 +899,11 @@ function generateSearchPageHtml(query: string, results: SearchResult[]): string 
       var vid = document.getElementById('preview-video');
       vid.pause();
       vid.src = '';
+      var ytFrame = document.getElementById('preview-yt');
+      if (ytFrame) {
+        ytFrame.src = '';
+        ytFrame.style.display = 'none';
+      }
       modal.style.display = 'none';
     }
 
