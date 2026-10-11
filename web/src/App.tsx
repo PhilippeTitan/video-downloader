@@ -1,5 +1,5 @@
 import React from 'react'
-import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, onNavState } from './bridge'
+import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, onNavState, requestNavigation } from './bridge'
 
 interface FavItem {
   label: string
@@ -152,6 +152,8 @@ interface AppState {
   rx: number
   favs: FavItem[]
   scale: number
+  vw: number
+  vh: number
   rt?: number
   detectedVideo: DetectedVideo | null
   webviewSrc: string
@@ -293,10 +295,22 @@ export default class App extends React.Component<{}, AppState> {
   syncBrowserPane = () => {
     if (!hasNativeShell()) return
     const el = this.browserSlotRef.current
+    const s = this.state
+    // The browsing WebView is a native layer ABOVE the whole UI, so it must
+    // drop while any UI overlay covers the slot: tab switcher, tab quick
+    // actions, format sheet, new-tab zoom, add-favorite modal.
+    const overlayUp = Boolean(
+      s.sw || s.swp > 0 ||
+      s.tm || s.tmp > 0 ||
+      s.sheet ||
+      s.nz ||
+      s.adding || s.mp > 0
+    )
     const isVisible = Boolean(
-      this.state.screen === 'browse' &&
-      this.state.webviewSrc &&
-      (!this.state.seq || this.state.seq.phase === 'done')
+      s.screen === 'browse' &&
+      s.webviewSrc &&
+      (!s.seq || s.seq.phase === 'done') &&
+      !overlayUp
     )
     if (!el || !isVisible) {
       requestBrowserPane(null)
@@ -448,6 +462,8 @@ export default class App extends React.Component<{}, AppState> {
       fx: 0,
       rx: 0,
       scale: 1,
+      vw: typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : 1194,
+      vh: typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : 1180,
       favs: savedFavs,
       detectedVideo: null,
       webviewSrc: '',
@@ -465,13 +481,16 @@ export default class App extends React.Component<{}, AppState> {
 
   handleResize = () => {
     if (typeof window !== 'undefined') {
-      this.setState({ scale: 1 }, this.syncBrowserPane)
+      this.setState(
+        { scale: 1, vw: window.innerWidth, vh: window.innerHeight },
+        this.syncBrowserPane,
+      )
     }
   }
 
   handleMessage = (e: MessageEvent) => {
     const data = e.data
-    if (data && data.source === 'vd-browser') {
+    if (data && (data.source === 'vd-browser' || data.source === 'vd-native')) {
       if (data.type === 'detect' && data.payload?.url) {
         const { url, title, thumbnail } = data.payload
         this.handleVideoDetected(url, title, thumbnail)
@@ -1030,8 +1049,11 @@ export default class App extends React.Component<{}, AppState> {
     }, 30)
   }
 
-  componentDidUpdate() {
+  componentDidUpdate(_prevProps: {}, prevState: AppState) {
     this.syncBrowserPane()
+    if (hasNativeShell() && this.state.webviewSrc && this.state.webviewSrc !== prevState.webviewSrc) {
+      requestNavigation(this.state.webviewSrc)
+    }
   }
 
   componentWillUnmount() {
@@ -1069,8 +1091,22 @@ export default class App extends React.Component<{}, AppState> {
     ]
   }
 
+  /** Tab-switcher grid scale: mockup metrics (736 grid, 360 cards, 480
+   *  previews, 376x552 pitch) shrunk to fit the live viewport, both axes. */
+  swScale(): number {
+    const vw = this.state.vw || 1194
+    const vh = this.state.vh || 1180
+    const availW = Math.max(360, vw - 56)
+    let k = Math.min(1, availW / 736)
+    const availH = Math.max(320, vh - 200)
+    const needH = 552 * 1.25
+    if (needH > availH) k = Math.min(k, availH / needH)
+    return Math.max(0.55, k)
+  }
+
   xy(i: number): [number, number] {
-    return [(i % 2) * 376, Math.floor(i / 2) * 552]
+    const k = this.swScale()
+    return [(i % 2) * Math.round(376 * k), Math.floor(i / 2) * Math.round(552 * k)]
   }
 
   norm(v: number, w: number): number {
@@ -1810,6 +1846,7 @@ export default class App extends React.Component<{}, AppState> {
       })
     }
 
+    const swk = this.swScale()
     const tabView = tabCards.map((c, i) => {
       const [tx, ty] = this.xy(i)
       const q = this.pos[c.id] || { x: tx, y: ty }
@@ -1822,7 +1859,7 @@ export default class App extends React.Component<{}, AppState> {
           position: 'absolute' as const,
           left: 0,
           top: 0,
-          width: 360,
+          width: Math.round(360 * swk),
           opacity: Number(fo.toFixed(3)),
           transform: `translate(${q.x.toFixed(1)}px,${q.y.toFixed(1)}px) scale(${sc.toFixed(3)})`,
           pointerEvents: isMine ? ('none' as const) : ('auto' as const),
@@ -1833,7 +1870,7 @@ export default class App extends React.Component<{}, AppState> {
     const gridH = Math.round(
       Math.max(
         0,
-        ...tabCards.map((c, i) => (this.pos[c.id] ? this.pos[c.id].y : this.xy(i)[1]) + 528),
+        ...tabCards.map((c, i) => (this.pos[c.id] ? this.pos[c.id].y : this.xy(i)[1]) + 528 * swk),
       ),
     )
 
@@ -5224,7 +5261,7 @@ export default class App extends React.Component<{}, AppState> {
 
                   <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
                     <div onScroll={onSc('sw')} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', paddingBottom: 24 }}>
-                      <div style={{ position: 'relative', width: 736, maxWidth: '100%', margin: '0 auto', height: gridH }}>
+                      <div style={{ position: 'relative', width: Math.round(736 * swk), maxWidth: '100%', margin: '0 auto', height: gridH }}>
                         {tabView.map((t) => (
                           <div key={t.id} style={t.slotStyle}>
                             <div style={t.pop}>
@@ -5237,11 +5274,11 @@ export default class App extends React.Component<{}, AppState> {
                                     alignItems: 'center',
                                     justifyContent: 'center',
                                     width: '100%',
-                                    height: 480,
+                                    height: Math.round(480 * swk),
                                     boxSizing: 'border-box',
                                     background: 'none',
                                     color: '#b7a6ff',
-                                    fontSize: 96,
+                                    fontSize: Math.round(96 * swk),
                                     fontWeight: 300,
                                     border: '2px dashed #4a5068',
                                     borderRadius: 20,
@@ -5252,7 +5289,7 @@ export default class App extends React.Component<{}, AppState> {
                               ) : (
                                 <div style={{ display: t.dsp }}>
                                   <div style={{ position: 'relative', borderRadius: 20, overflow: 'hidden', background: '#181a22' }}>
-                                    <button aria-label={t.title} onClick={t.open} style={{ display: 'block', width: '100%', height: 480, padding: 0, background: 'linear-gradient(135deg,#34304f,#1a1c27)' }} />
+                                    <button aria-label={t.title} onClick={t.open} style={{ display: 'block', width: '100%', height: Math.round(480 * swk), padding: 0, background: 'linear-gradient(135deg,#34304f,#1a1c27)' }} />
                                     <div style={{ position: 'absolute', inset: 0, borderRadius: 20, pointerEvents: 'none', boxShadow: t.ring }} />
                                     {t.canClose && (
                                       <button aria-label="Close tab" onClick={t.close} style={{ position: 'absolute', top: 8, right: 8, width: 44, height: 44, borderRadius: 22, background: 'rgba(0,0,0,.55)', color: '#fff', fontSize: 22 }}>
