@@ -126,6 +126,7 @@ interface AppState {
   nzp: number
   nzf: number
   hist: string[]
+  histClearedToast?: boolean
   hm: boolean
   hmp: number
   hop: number
@@ -158,6 +159,13 @@ interface AppState {
   searchFocused: boolean
   canGoBackNative?: boolean
   canGoForwardNative?: boolean
+  pullY: number
+  isPulling: boolean
+  isRefreshing: boolean
+  refreshKey: number
+  refreshedToast: boolean
+  draggingTabIdx: number | null
+  dragTabOffset: number
 }
 
 const STORAGE_KEY_LIB = 'vd-downloads-v1'
@@ -415,6 +423,7 @@ export default class App extends React.Component<{}, AppState> {
       nzp: 0,
       nzf: 0,
       hist: savedHist,
+      histClearedToast: false,
       hm: false,
       hmp: 0,
       hop: 0,
@@ -444,6 +453,13 @@ export default class App extends React.Component<{}, AppState> {
       webviewSrc: '',
       webviewUrl: '',
       searchFocused: false,
+      pullY: 0,
+      isPulling: false,
+      isRefreshing: false,
+      refreshKey: 0,
+      refreshedToast: false,
+      draggingTabIdx: null,
+      dragTabOffset: 0,
     }
   }
 
@@ -552,6 +568,147 @@ export default class App extends React.Component<{}, AppState> {
         localStorage.setItem(STORAGE_KEY_DH, JSON.stringify(this.state.dhRows))
       } catch {}
     }
+  }
+
+  clearHistTimeout: any = null
+
+  clearRecentSearches = () => {
+    if (this.clearHistTimeout) clearTimeout(this.clearHistTimeout)
+    this.setState({
+      hist: [],
+      histClearedToast: true,
+    }, () => {
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem(STORAGE_KEY_HIST, JSON.stringify([]))
+        } catch {}
+      }
+    })
+    this.clearHistTimeout = setTimeout(() => {
+      this.setState({ histClearedToast: false })
+    }, 2400)
+  }
+
+  pillDragIdx: number | null = null
+  pillStartX = 0
+  pillMoved = false
+
+  handlePillPointerDown = (e: React.PointerEvent, idx: number) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return
+    this.pillDragIdx = idx
+    this.pillStartX = e.clientX
+    this.pillMoved = false
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {}
+  }
+
+  handlePillPointerMove = (e: React.PointerEvent, idx: number) => {
+    if (this.pillDragIdx !== idx) return
+    const dx = e.clientX - this.pillStartX
+    if (!this.pillMoved && Math.abs(dx) > 6) {
+      this.pillMoved = true
+      this.setState({ draggingTabIdx: idx, dragTabOffset: dx })
+    } else if (this.pillMoved) {
+      this.setState({ dragTabOffset: dx })
+    }
+  }
+
+  handlePillPointerUp = (_e: React.PointerEvent, idx: number, pitch: number, totalTabs: number, defaultGo: () => void) => {
+    if (this.pillDragIdx !== idx) return
+    const wasMoved = this.pillMoved
+    const offset = this.state.dragTabOffset
+    this.pillDragIdx = null
+    this.pillMoved = false
+
+    if (wasMoved && Math.abs(offset) > 12) {
+      const steps = Math.round(offset / (pitch || 1))
+      const targetIdx = Math.max(0, Math.min(totalTabs - 1, idx + steps))
+      this.setState({ draggingTabIdx: null, dragTabOffset: 0 })
+      if (targetIdx !== idx) {
+        this.reorderTabs(idx, targetIdx)
+      }
+    } else {
+      this.setState({ draggingTabIdx: null, dragTabOffset: 0 })
+      if (!wasMoved) {
+        defaultGo()
+      }
+    }
+  }
+
+  reorderTabs = (fromIndex: number, toIndex: number) => {
+    const { tabs, ci, cpriv, q } = this.state
+    const all = tabs.length > 0 ? [...tabs] : [{ id: 1, text: q || '', priv: cpriv }]
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= all.length || toIndex >= all.length) {
+      return
+    }
+    const activeTab = all[ci]
+    const activeTabId = activeTab ? activeTab.id : null
+
+    const [moved] = all.splice(fromIndex, 1)
+    all.splice(toIndex, 0, moved)
+
+    const nextCi = activeTabId !== null ? all.findIndex((t) => t.id === activeTabId) : 0
+    this.setState({
+      tabs: all,
+      ci: nextCi >= 0 ? nextCi : 0,
+    })
+  }
+
+  pullStartY = 0
+  isPullGesture = false
+  refreshTimer: any = null
+
+  handlePullStart = (clientY: number) => {
+    if (this.state.isRefreshing) return
+    this.pullStartY = clientY
+    this.isPullGesture = true
+  }
+
+  handlePullMove = (clientY: number) => {
+    if (!this.isPullGesture || this.state.isRefreshing) return
+    const delta = clientY - this.pullStartY
+    if (delta > 0) {
+      const pullY = Math.min(84, Math.round(Math.pow(delta, 0.85) * 1.5))
+      this.setState({ pullY, isPulling: true })
+    }
+  }
+
+  handlePullEnd = () => {
+    if (!this.isPullGesture) return
+    this.isPullGesture = false
+    if (this.state.pullY >= 50) {
+      this.triggerRefresh()
+    } else {
+      this.setState({ pullY: 0, isPulling: false })
+    }
+  }
+
+  triggerRefresh = () => {
+    if (this.state.isRefreshing) return
+    if (this.refreshTimer) clearTimeout(this.refreshTimer)
+    this.setState({
+      isRefreshing: true,
+      pullY: 54,
+      isPulling: false,
+    })
+
+    this.refreshTimer = setTimeout(() => {
+      this.setState({
+        refreshKey: (this.state.refreshKey || 0) + 1,
+        refreshedToast: true,
+      })
+      if (this.state.webviewUrl || this.state.q) {
+        this.handleVideoDetected(this.state.webviewUrl || this.state.q)
+      }
+      setTimeout(() => {
+        this.setState({
+          isRefreshing: false,
+          pullY: 0,
+          refreshedToast: false,
+        })
+      }, 450)
+    }, 650)
   }
 
   componentDidMount() {
@@ -757,27 +914,6 @@ export default class App extends React.Component<{}, AppState> {
         const npb = ap(s.pb, underT, 0.035, 0.12)
         if (npa !== s.pa) up.pa = npa
         if (npb !== s.pb) up.pb = npb
-        const nL = s.tabs.length + 1 + (s.nph === 'slide' || s.nph === 'hold' ? 1 : 0)
-        let mv = false
-        for (let i = 0; i < nL; i++) {
-          const gg = this.geo(nL, 112, 148, 8, 64)
-          const tl = gg.base + i * gg.pitch
-          const tw = gg.w
-          const q = this.pp[i]
-          if (!q) {
-            this.pp[i] = { l: tl, w: tw }
-            continue
-          }
-          if (Math.abs(tl - q.l) + Math.abs(tw - q.w) > 0.5) {
-            q.l += (tl - q.l) * 0.2
-            q.w += (tw - q.w) * 0.2
-            mv = true
-          } else {
-            q.l = tl
-            q.w = tw
-          }
-        }
-        if (mv) up.pt = Date.now()
         if (this.lastN !== undefined && s.tabs.length > this.lastN) this.sfGo = true
         this.lastN = s.tabs.length
         if (this.sfGo && !this.dr.sf) {
@@ -899,6 +1035,8 @@ export default class App extends React.Component<{}, AppState> {
   }
 
   componentWillUnmount() {
+    if (this.clearHistTimeout) clearTimeout(this.clearHistTimeout)
+    if (this.refreshTimer) clearTimeout(this.refreshTimer)
     if (this.unsubNav) this.unsubNav()
     clearInterval(this.t)
     clearInterval(this.tick)
@@ -923,11 +1061,11 @@ export default class App extends React.Component<{}, AppState> {
   }
 
   ids(s: AppState): string[] {
-    const l = s.tabs.filter((t) => !!t.priv === s.swm)
+    const all = s.tabs.length > 0 ? s.tabs : [{ id: 1, text: '', priv: s.cpriv }]
+    const l = all.filter((t) => !!t.priv === s.swm)
     return [
-      ...(s.swm === s.cpriv ? ['cur'] : []),
       ...l.map((t) => String(t.id)),
-      ...(s.tabs.length + 1 < 10 ? ['new'] : []),
+      ...(all.length < 10 ? ['new'] : []),
     ]
   }
 
@@ -1412,78 +1550,100 @@ export default class App extends React.Component<{}, AppState> {
     }
     const subOf = (t: string) => (t ? (/^\S+\.[a-zA-Z]{2,}/.test(t) ? 'Website' : 'Search') : 'Home')
 
-    const cI = Math.min(s.ci, s.tabs.length)
-    const swapState = (t: TabItem): Partial<AppState> => {
-      const full = [
-        ...s.tabs.slice(0, cI),
-        { id: t.id, text: curText, priv: s.cpriv },
-        ...s.tabs.slice(cI),
-      ]
-      const k = s.tabs.findIndex((x) => x.id === t.id)
-      const jj = k < cI ? k : k + 1
-      return {
-        tabs: full.filter((_, idx) => idx !== jj),
-        ci: jj,
-        cpriv: !!t.priv,
+    const allTabs = s.tabs.length > 0 ? s.tabs : [{ id: 1, text: curText || s.q || '', priv: s.cpriv }]
+    const activeIndex = Math.max(0, Math.min(allTabs.length - 1, s.ci))
+
+    // Helper to get effective title/text for a tab and heal any stale duplicated text
+    const getTabEffectiveText = (t: TabItem, idx: number) => {
+      if (idx === activeIndex) return (curText || s.q || t.text || '')
+      const h = this.tabHistories[t.id]
+      if ((!h || h.stack.length === 0) && t.text && t.text === curText) {
+        return '' // Fresh new tab that had stale copied text
       }
+      return t.text || ''
     }
 
-    const switchTab = (t: TabItem) => {
-      if (s.tsph || s.nph || s.nz || s.cl || s.sw) return
-      if (sq && !(ph === 'load' || ph === 'done')) return
-      const patch = swapState(t)
-      if (!pageUp) {
-        if (t.text)
-          this.setState({
-            ...patch,
-            seq: { key: 'tab:' + t.id, text: t.text, phase: 'fade', skip: true },
-            sp: 0,
-            q: t.text,
-          } as any)
-        else this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
+    const switchToTab = (targetIdx: number) => {
+      if (s.tsph || s.nph || s.nz || s.cl) return
+      if (targetIdx === activeIndex && s.screen === 'browse') {
+        if (s.sw) this.setState({ sw: false })
         return
       }
-      if (t.text) {
-        this.afterTs = () => this.setState({ ...patch, ...restore(t.text) } as any)
-        this.setState({ tsph: 'out', tsp: 0 })
+      const curTextVal = (pageUp && sq ? sq.text : '') || s.q || allTabs[activeIndex]?.text || ''
+      const updatedTabs = allTabs.map((t, idx) =>
+        idx === activeIndex ? { ...t, text: curTextVal, priv: s.cpriv } : t
+      )
+      const target = updatedTabs[targetIdx]
+      if (!target) return
+      const targetText = getTabEffectiveText(target, targetIdx)
+      const patch = {
+        tabs: updatedTabs.map((t, idx) => (idx === targetIdx ? { ...t, text: targetText } : t)),
+        ci: targetIdx,
+        cpriv: !!target.priv,
+        sw: false,
+        screen: 'browse' as const,
+      }
+      if (targetText) {
+        this.setState({
+          ...patch,
+          ...restore(targetText),
+        } as any)
       } else {
-        this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
+        this.setState({
+          ...patch,
+          seq: null,
+          sp: 0,
+          q: '',
+          webviewSrc: '',
+          webviewUrl: '',
+          detectedVideo: null,
+        } as any)
       }
     }
 
     const busy = s.caOn || s.cl || s.tsph || s.nph || s.nz
+    const dropTabById = (id: number) => {
+      if (s.cl) return
+      this.afterClose = () => {
+        delete this.pos[String(id)]
+        const k = allTabs.findIndex((x) => x.id === id)
+        if (k < 0) return
+        const remaining = allTabs.filter((x) => x.id !== id)
+        if (remaining.length === 0) {
+          const freshTab: TabItem = { id: Date.now(), text: '', priv: s.cpriv }
+          this.setState({
+            tabs: [freshTab],
+            ci: 0,
+            seq: null,
+            sp: 0,
+            q: '',
+            webviewSrc: '',
+            webviewUrl: '',
+            detectedVideo: null,
+          } as any)
+          return
+        }
+        const nextCi = Math.max(0, Math.min(remaining.length - 1, activeIndex >= k ? activeIndex - 1 : activeIndex))
+        const activeTab = remaining[nextCi]
+        const effText = getTabEffectiveText(activeTab, nextCi)
+        this.setState({
+          tabs: remaining,
+          ci: nextCi,
+          cpriv: !!activeTab.priv,
+          ...(effText ? restore(effText) : { seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null }),
+        } as any)
+      }
+      this.setState({ cl: { id: String(id) }, cf: 0 })
+    }
+
     const closeCurrent = () => {
       if (busy) return
-      if (!s.tabs.length) {
-        if (pageUp && s.screen === 'browse')
-          this.setState({ seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null })
-        return
+      const curTab = allTabs[activeIndex]
+      if (curTab && allTabs.length > 1) {
+        dropTabById(curTab.id)
+      } else if (pageUp && s.screen === 'browse') {
+        this.setState({ seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null })
       }
-      const kk = cI > 0 ? cI - 1 : 0
-      const n = s.tabs[kk]
-      const patch = { tabs: s.tabs.filter((_, i) => i !== kk), ci: kk, cpriv: !!n.priv }
-      this.afterClose = () => {
-        if (this.pos.cur && this.pos[n.id]) {
-          this.pos.cur = { ...this.pos[n.id] }
-        }
-        delete this.pos[n.id]
-        if (!pageUp) {
-          if (n.text)
-            this.setState({
-              ...patch,
-              seq: { key: 'tab:' + n.id, text: n.text, phase: 'fade', skip: true },
-              sp: 0,
-              q: n.text,
-            } as any)
-          else this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
-        } else if (n.text) {
-          this.afterTs = () => this.setState({ ...patch, ...restore(n.text) } as any)
-          this.setState({ tsph: 'out', tsp: 0 })
-        } else {
-          this.setState({ ...patch, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null } as any)
-        }
-      }
-      this.setState({ cl: { id: 'cur' }, cf: 0 })
     }
 
     const closeAll = () => {
@@ -1519,19 +1679,18 @@ export default class App extends React.Component<{}, AppState> {
           h: a.height * k,
         }
       }
-      const nt = [
-        ...s.tabs.slice(0, cI),
-        { id: Date.now(), text: pageUp ? sq!.text : '', priv: s.cpriv },
-        ...s.tabs.slice(cI),
-      ]
+      const curTextVal = (pageUp && sq ? sq.text : '') || s.q || allTabs[activeIndex]?.text || ''
+      const updated = allTabs.map((t, idx) => (idx === activeIndex ? { ...t, text: curTextVal, priv: s.cpriv } : t))
+      const newTabItem: TabItem = { id: Date.now(), text: '', priv: s.swm }
+      const nt = [...updated, newTabItem]
       const base = {
         tabs: nt,
-        ci: nt.length,
+        ci: nt.length - 1,
         cpriv: s.swm,
         seq: null,
         sp: 0,
         q: '',
-        screen: 'browse',
+        screen: 'browse' as const,
       }
       this.setState({ nz: { ...r, base }, nzph: 'zoom', nzp: 0, nzf: 0 })
     }
@@ -1559,86 +1718,62 @@ export default class App extends React.Component<{}, AppState> {
           fontWeight: 300,
         }
 
-    const goTab = (t: TabItem) => () =>
-      this.setState({
-        ...swapState(t),
-        ...restore(t.text),
-        sw: false,
-        screen: 'browse',
-      } as any)
-
-    const dropTab = (t: TabItem) => () => {
-      if (s.cl) return
-      this.afterClose = () => {
-        delete this.pos[String(t.id)]
-        const k = s.tabs.findIndex((x) => x.id === t.id)
-        this.setState({
-          tabs: s.tabs.filter((x) => x.id !== t.id),
-          ci: k < cI ? cI - 1 : cI,
-        })
-      }
-      this.setState({ cl: { id: String(t.id) }, cf: 0 })
-    }
-
-    const dropCur = () => {
-      if (!s.tabs.length || s.cl) return
-      const kk = cI > 0 ? cI - 1 : 0
-      const n = s.tabs[kk]
-      const rest = s.tabs.filter((_, idx) => idx !== kk)
-      this.afterClose = () => {
-        this.pos.cur = { ...(this.pos[String(n.id)] || this.pos.cur) }
-        delete this.pos[String(n.id)]
-        this.setState({ tabs: rest, ci: kk, cpriv: !!n.priv, ...restore(n.text) } as any)
-      }
-      this.setState({ cl: { id: 'cur' }, cf: 0 })
-    }
-
     const swm = s.swm
-    const vis = s.tabs.filter((t) => !!t.priv === swm)
-    const showCur = swm === s.cpriv
-    const off = showCur ? 1 : 0
-    const swCount = vis.length + off
-
-    const curCard = {
-      id: 'cur',
-      title: curText || (s.cpriv ? 'Private Browsing' : 'Start page'),
-      sub: subOf(curText) + ' · current',
-      pop: pop(0),
-      ring: 'inset 0 0 0 3px #7c5cff',
-      open: closeSw,
-      close: dropCur,
-      canClose: s.tabs.length > 0,
-      dsp: 'block',
-      isNew: false,
-    }
+    const vis = allTabs.filter((t) => !!t.priv === swm)
+    const swCount = vis.length
 
     const tabCards = [
-      ...(showCur ? [curCard] : []),
-      ...vis.map((t, i) => ({
-        id: String(t.id),
-        title: t.text || (t.priv ? 'Private Browsing' : 'Start page'),
-        sub: subOf(t.text),
-        pop: pop(i + off),
-        ring: 'none',
-        open: goTab(t),
-        close: dropTab(t),
-        canClose: true,
-        dsp: 'block',
-        isNew: false,
-      })),
-      ...(s.tabs.length + 1 < 10
+      ...vis.map((t, i) => {
+        const isCur = t.id === allTabs[activeIndex]?.id
+        const tabTitle = getTabEffectiveText(t, allTabs.findIndex((x) => x.id === t.id))
+        return {
+          id: String(t.id),
+          title: tabTitle || (t.priv ? 'Private Browsing' : 'Start page'),
+          sub: subOf(tabTitle) + (isCur ? ' · current' : ''),
+          pop: pop(i),
+          ring: isCur ? 'inset 0 0 0 3px #7c5cff' : 'none',
+          open: () => {
+            const idx = allTabs.findIndex((x) => x.id === t.id)
+            if (idx >= 0) switchToTab(idx)
+            closeSw()
+          },
+          close: () => dropTabById(t.id),
+          canClose: allTabs.length > 1,
+          dsp: 'block',
+          isNew: false,
+          cardIndex: i,
+          canMoveLeft: i > 0,
+          canMoveRight: i < vis.length - 1,
+          moveLeft: () => {
+            const fromIdx = allTabs.findIndex((x) => x.id === t.id)
+            const toIdx = allTabs.findIndex((x) => x.id === vis[i - 1]?.id)
+            if (fromIdx >= 0 && toIdx >= 0) this.reorderTabs(fromIdx, toIdx)
+          },
+          moveRight: () => {
+            const fromIdx = allTabs.findIndex((x) => x.id === t.id)
+            const toIdx = allTabs.findIndex((x) => x.id === vis[i + 1]?.id)
+            if (fromIdx >= 0 && toIdx >= 0) this.reorderTabs(fromIdx, toIdx)
+          },
+        }
+      }),
+      ...(allTabs.length < 10
         ? [
             {
               id: 'new',
               title: '',
               sub: '',
-              pop: pop(vis.length + off),
+              pop: pop(vis.length),
               ring: 'none',
               open: addFromSw,
               close: closeSw,
               canClose: false,
               dsp: 'none',
               isNew: true,
+              cardIndex: -1,
+              canMoveLeft: false,
+              canMoveRight: false,
+              moveLeft: () => {},
+              moveRight: () => {},
             },
           ]
         : []),
@@ -1651,27 +1786,28 @@ export default class App extends React.Component<{}, AppState> {
         this.held = false
         return
       }
-      if (s.nph || s.tabs.length + 1 >= 10) return
-      this.afterNew = () => doNewTab(pr)
+      if (allTabs.length >= 10) return
       this.sfGo = true
-      if (pageUp && s.screen === 'browse') {
-        this.setState({ nph: 'slide', npp: 0, seq: { ...s.seq!, phase: 'rdown' }, sp: 0 })
-      } else {
-        this.setState({ nph: 'slide', npp: 0 })
-      }
+      doNewTab(pr)
     }
 
     const doNewTab = (pr: boolean) => {
-      const nt = [
-        ...s.tabs.slice(0, cI),
-        { id: Date.now(), text: pageUp ? sq!.text : '', priv: s.cpriv },
-        ...s.tabs.slice(cI),
-      ]
-      if (pageUp && s.screen === 'browse') {
-        this.setState({ tabs: nt, ci: nt.length, cpriv: !!pr, webviewSrc: '', webviewUrl: '', detectedVideo: null })
-      } else {
-        this.setState({ tabs: nt, ci: nt.length, cpriv: !!pr, seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null, screen: 'browse' })
-      }
+      const curTextVal = (pageUp && sq ? sq.text : '') || s.q || allTabs[activeIndex]?.text || ''
+      const updated = allTabs.map((t, idx) => (idx === activeIndex ? { ...t, text: curTextVal, priv: s.cpriv } : t))
+      const newTabItem: TabItem = { id: Date.now(), text: '', priv: !!pr }
+      const nt = [...updated, newTabItem]
+      this.setState({
+        tabs: nt,
+        ci: nt.length - 1,
+        cpriv: !!pr,
+        seq: null,
+        sp: 0,
+        q: '',
+        webviewSrc: '',
+        webviewUrl: '',
+        detectedVideo: null,
+        screen: 'browse',
+      })
     }
 
     const tabView = tabCards.map((c, i) => {
@@ -1701,28 +1837,24 @@ export default class App extends React.Component<{}, AppState> {
       ),
     )
 
-    const nT = s.tabs.length + 1
+    const nT = allTabs.length
     const pend = s.nph === 'slide' || s.nph === 'hold'
     const nL = nT + (pend ? 1 : 0)
     const nEnd = nL
     const lbl = (t: string, pv?: boolean) => t || (pv ? 'Private' : 'New tab')
-    const titles = [
-      ...s.tabs.slice(0, cI).map((t) => lbl(t.text, t.priv)),
-      lbl(curText, s.cpriv),
-      ...s.tabs.slice(cI).map((t) => lbl(t.text, t.priv)),
-    ]
-    const privs = [
-      ...s.tabs.slice(0, cI).map((t) => !!t.priv),
-      !!s.cpriv,
-      ...s.tabs.slice(cI).map((t) => !!t.priv),
-    ]
+    const titles = allTabs.map((t, idx) => {
+      const isCur = idx === activeIndex
+      const txt = getTabEffectiveText(t, idx)
+      return lbl(txt, isCur ? s.cpriv : t.priv)
+    })
+    const privs = allTabs.map((t, idx) => (idx === activeIndex ? !!s.cpriv : !!t.priv))
 
     const goPill = (i: number) =>
-      i === cI
+      i === activeIndex
         ? () => {}
         : () => {
             if ((this.mv.sf || 0) > 6) return
-            switchTab(s.tabs[i < cI ? i : i - 1])
+            switchToTab(i)
           }
 
     const curMix = s.nph === 'slide' ? 1 - Math.min(1, s.npp / 0.35) : s.nph === 'hold' ? 0 : 1
@@ -1741,87 +1873,122 @@ export default class App extends React.Component<{}, AppState> {
     const sxT = gT.over ? -s.sf * gT.range : 0
     const sxU = gU.over ? -s.sf * gU.range : 0
 
-    const pillsTop = s.tabs.length
-      ? titles.map((title, i) => {
-          const cur = i === cI
-          const q = this.pp[i] || { l: gT.base + i * gT.pitch, w: gT.w }
-          const o =
-            (cur && s.nph === 'out' ? 1 : s.pa) *
-            (1 - s.swp) *
-            (1 - s.cax) *
-            (cur && s.cl && s.cl.id === 'cur' ? 1 - s.cf : 1)
-          const cols = pillCol(cur)
-          return {
-            title,
-            style: {
-              position: 'absolute' as const,
-              left: Number((q.l + sxT - 140).toFixed(1)),
-              top: 20,
-              width: Number(q.w.toFixed(1)),
-              height: 44,
-              boxSizing: 'border-box' as const,
-              borderRadius: 22,
-              padding: '0 14px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 15,
-              fontWeight: 600,
-              background: cols.background,
-              color: cols.color,
-              boxShadow:
-                '0 8px 24px rgba(0,0,0,.4),-6px 0 14px rgba(0,0,0,.3)' +
-                (privs[i] ? ',inset 0 0 0 1.5px #b7a6ff' : ''),
-              pointerEvents: o > 0.5 ? ('auto' as const) : ('none' as const),
-              opacity: Number(o.toFixed(3)),
-            },
-            go: goPill(i),
-          }
-        })
-      : []
+    const pillsTop =
+      allTabs.length > 1 || (allTabs.length === 1 && !!allTabs[0].text)
+        ? titles.map((title, i) => {
+            const cur = i === activeIndex
+            const tl = gT.base + i * gT.pitch
+            const tw = gT.w
+            const o =
+              (cur && s.nph === 'out' ? 1 : s.pa) *
+              (1 - s.swp) *
+              (1 - s.cax) *
+              (cur && s.cl && s.cl.id === 'cur' ? 1 - s.cf : 1)
+            const cols = pillCol(cur)
+
+            const isDragging = s.draggingTabIdx === i
+            const dragOffset = isDragging ? s.dragTabOffset : 0
+
+            let shiftOffset = 0
+            if (s.draggingTabIdx !== null && !isDragging) {
+              const dragFrom = s.draggingTabIdx
+              const dragSteps = Math.round(s.dragTabOffset / (gT.pitch || 1))
+              const dragTo = Math.max(0, Math.min(allTabs.length - 1, dragFrom + dragSteps))
+              if (dragFrom < dragTo && i > dragFrom && i <= dragTo) {
+                shiftOffset = -gT.pitch
+              } else if (dragFrom > dragTo && i >= dragTo && i < dragFrom) {
+                shiftOffset = gT.pitch
+              }
+            }
+
+            return {
+              title,
+              index: i,
+              style: {
+                position: 'absolute' as const,
+                left: Number((tl + sxT - 140 + dragOffset + shiftOffset).toFixed(1)),
+                top: 20,
+                width: Number(tw.toFixed(1)),
+                height: 44,
+                boxSizing: 'border-box' as const,
+                borderRadius: 22,
+                padding: '0 14px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 15,
+                fontWeight: 600,
+                background: isDragging ? '#6347d9' : cols.background,
+                color: cols.color,
+                zIndex: isDragging ? 99 : (cur ? 20 : i + 1),
+                boxShadow: isDragging
+                  ? '0 16px 36px rgba(0,0,0,.6), 0 0 0 2px #b7a6ff'
+                  : '0 8px 24px rgba(0,0,0,.4),-6px 0 14px rgba(0,0,0,.3)' +
+                    (privs[i] ? ',inset 0 0 0 1.5px #b7a6ff' : ''),
+                pointerEvents: o > 0.5 ? ('auto' as const) : ('none' as const),
+                opacity: Number(o.toFixed(3)),
+                cursor: isDragging ? 'grabbing' : (allTabs.length > 1 ? 'grab' : 'pointer'),
+                transform: isDragging ? 'scale(1.08)' : 'scale(1)',
+                transition: isDragging
+                  ? 'transform 0.12s ease, box-shadow 0.12s ease'
+                  : 'left 0.28s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s ease, width 0.32s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease',
+                willChange: 'left, width, transform',
+                touchAction: 'none' as const,
+                userSelect: 'none' as const,
+                WebkitUserSelect: 'none' as const,
+              },
+              go: goPill(i),
+            }
+          })
+        : []
 
     const dly = nT > 1 ? 0.5 / (nT - 1) : 0
-    const pillsUnder = s.tabs.length
-      ? titles.map((title, i) => {
-          const cur = i === cI
-          const o =
-            Math.max(0, Math.min(1, (s.pb - i * dly) / 0.5)) *
-            (1 - s.swp) *
-            (1 - s.cax) *
-            (cur && s.cl && s.cl.id === 'cur' ? 1 - s.cf : 1)
-          const cols = pillCol(cur)
-          return {
-            title,
-            style: {
-              position: 'absolute' as const,
-              left: Number((gU.base + i * gU.pitch + sxU - 140).toFixed(1)),
-              top: 2,
-              width: gU.w,
-              height: 34,
-              boxSizing: 'border-box' as const,
-              borderRadius: 17,
-              padding: '0 12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: 13,
-              fontWeight: 600,
-              background: cols.background,
-              color: cols.color,
-              boxShadow:
-                [
-                  gU.pitch < gU.w + 6 ? '-6px 0 12px rgba(0,0,0,.35)' : '',
-                  privs[i] ? 'inset 0 0 0 1.5px #b7a6ff' : '',
-                ]
-                  .filter(Boolean)
-                  .join(',') || 'none',
-              pointerEvents: o > 0.5 ? ('auto' as const) : ('none' as const),
-              opacity: Number(o.toFixed(3)),
-            },
-            go: goPill(i),
-          }
-        })
-      : []
+    const pillsUnder =
+      allTabs.length > 1 || (allTabs.length === 1 && !!allTabs[0].text)
+        ? titles.map((title, i) => {
+            const cur = i === activeIndex
+            const o =
+              Math.max(0, Math.min(1, (s.pb - i * dly) / 0.5)) *
+              (1 - s.swp) *
+              (1 - s.cax) *
+              (cur && s.cl && s.cl.id === 'cur' ? 1 - s.cf : 1)
+            const cols = pillCol(cur)
+            return {
+              title,
+              style: {
+                position: 'absolute' as const,
+                left: Number((gU.base + i * gU.pitch + sxU - 140).toFixed(1)),
+                top: 2,
+                width: gU.w,
+                height: 34,
+                boxSizing: 'border-box' as const,
+                borderRadius: 17,
+                padding: '0 12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 13,
+                fontWeight: 600,
+                background: cols.background,
+                color: cols.color,
+                zIndex: cur ? 20 : i + 1,
+                boxShadow:
+                  [
+                    gU.pitch < gU.w + 6 ? '-6px 0 12px rgba(0,0,0,.35)' : '',
+                    privs[i] ? 'inset 0 0 0 1.5px #b7a6ff' : '',
+                  ]
+                    .filter(Boolean)
+                    .join(',') || 'none',
+                pointerEvents: o > 0.5 ? ('auto' as const) : ('none' as const),
+                opacity: Number(o.toFixed(3)),
+                transition:
+                  'left 0.32s cubic-bezier(0.16, 1, 0.3, 1), width 0.32s cubic-bezier(0.16, 1, 0.3, 1), background 0.2s ease, color 0.2s ease, opacity 0.2s ease',
+                willChange: 'left, width',
+              },
+              go: goPill(i),
+            }
+          })
+        : []
 
     const edge = 'linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent)'
     const rgMax = Math.max(gT.range, gU.range) || 1
@@ -2166,7 +2333,26 @@ export default class App extends React.Component<{}, AppState> {
                           {/* Recent Searches Section (only rendered when there are searches) */}
                           {rawRecents.length > 0 && (
                             <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: '#9aa3b2' }}>Recent searches</div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 2px' }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: '#9aa3b2' }}>Recent searches</div>
+                                <button
+                                  type="button"
+                                  onClick={this.clearRecentSearches}
+                                  title="Clear recent searches"
+                                  style={{
+                                    background: 'none',
+                                    border: 0,
+                                    color: '#8b94a5',
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    padding: '2px 8px',
+                                    borderRadius: 6,
+                                  }}
+                                >
+                                  Clear
+                                </button>
+                              </div>
                               <div
                                 {...rm}
                                 style={{
@@ -2332,8 +2518,8 @@ export default class App extends React.Component<{}, AppState> {
                     <div
                       style={{
                         position: 'absolute',
-                        left: 0,
-                        right: 0,
+                        left: `${Math.round(180 * barUpP)}px`,
+                        right: `${Math.round(152 * barUpP)}px`,
                         top: `calc(${(1 - barUpP) * 50}% + ${Math.round(-30 + 78 * barUpP)}px)`,
                         display: 'flex',
                         justifyContent: 'center',
@@ -2345,7 +2531,8 @@ export default class App extends React.Component<{}, AppState> {
                         style={{
                           position: 'relative',
                           width: '100%',
-                          maxWidth: barUpP > 0.5 ? 'min(492px, calc(100% - 250px))' : 'min(560px, calc(100% - 32px))',
+                          minWidth: 0,
+                          maxWidth: barUpP > 0.5 ? 492 : 'min(560px, calc(100% - 32px))',
                         }}
                       >
                         <div
@@ -2495,6 +2682,7 @@ export default class App extends React.Component<{}, AppState> {
                           }}
                           style={{
                             width: '100%',
+                            minWidth: 0,
                             height: 60,
                             boxSizing: 'border-box',
                             borderRadius: 30,
@@ -2509,6 +2697,7 @@ export default class App extends React.Component<{}, AppState> {
                         />
                         {(s.searchFocused ? s.q : (isBarUp ? '' : s.q)) && (
                           <button
+                            type="button"
                             aria-label="Clear search"
                             onClick={() => this.setState({ q: '' })}
                             style={{
@@ -2529,6 +2718,34 @@ export default class App extends React.Component<{}, AppState> {
                           >
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
                               <path d="M18 6L6 18M6 6l12 12" />
+                            </svg>
+                          </button>
+                        )}
+                        {isBarUp && !s.searchFocused && (
+                          <button
+                            type="button"
+                            aria-label="Refresh page"
+                            title="Refresh page"
+                            onClick={this.triggerRefresh}
+                            style={{
+                              position: 'absolute',
+                              right: 18,
+                              top: 18,
+                              width: 24,
+                              height: 24,
+                              borderRadius: 12,
+                              background: 'none',
+                              color: s.isRefreshing ? '#3ecf8e' : '#9aa3b2',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              border: 0,
+                              transition: 'transform 0.15s ease, color 0.15s ease',
+                            }}
+                          >
+                            <svg className={s.isRefreshing ? 'animate-spin' : ''} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-1.19" />
                             </svg>
                           </button>
                         )}
@@ -2553,10 +2770,44 @@ export default class App extends React.Component<{}, AppState> {
                           WebkitClipPath: `inset(${resClip}px 0 0 0)`,
                         }}
                       >
-                        {/* Live Browser Surface — fills 100% of the space on the sides edge to edge like Safari */}
+                        {/* Pull to refresh touch / gesture zone */}
+                        <div
+                          onPointerDown={(e) => {
+                            this.handlePullStart(e.clientY)
+                            try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                          }}
+                          onPointerMove={(e) => this.handlePullMove(e.clientY)}
+                          onPointerUp={this.handlePullEnd}
+                          onPointerCancel={this.handlePullEnd}
+                          style={{
+                            height: 20,
+                            width: '100%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'grab',
+                            touchAction: 'none',
+                            zIndex: 35,
+                            background: 'linear-gradient(180deg, rgba(31,34,48,0.6) 0%, rgba(31,34,48,0) 100%)',
+                          }}
+                          title="Pull down to refresh"
+                        >
+                          <div style={{ width: 36, height: 3.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }} />
+                        </div>
+
+                        {/* Live Browser Surface */}
                         <div
                           ref={this.browserSlotRef}
                           className="browser-slot"
+                          onPointerDown={(e) => {
+                            if (e.clientY < 260) {
+                              this.handlePullStart(e.clientY)
+                              try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                            }
+                          }}
+                          onPointerMove={(e) => this.handlePullMove(e.clientY)}
+                          onPointerUp={this.handlePullEnd}
+                          onPointerCancel={this.handlePullEnd}
                           style={{
                             flex: 1,
                             width: '100%',
@@ -2564,22 +2815,114 @@ export default class App extends React.Component<{}, AppState> {
                             overflow: 'hidden',
                             background: hasNativeShell() ? 'transparent' : '#0d0e14',
                             position: 'relative',
+                            touchAction: 'pan-x pan-y',
                           }}
                         >
-                          {!hasNativeShell() && (
-                            <iframe
-                              className="safari-webview-frame"
-                              title="Browsing Session"
-                              src={s.webviewSrc || resolveWebTarget(resTitle).src}
+                          {/* Pull to refresh visual indicator badge */}
+                          {(s.pullY > 0 || s.isRefreshing) && (
+                            <div
                               style={{
-                                width: '100%',
-                                height: '100%',
-                                border: 'none',
-                                display: 'block',
-                                background: '#0e0f14',
+                                position: 'absolute',
+                                top: 0,
+                                left: 0,
+                                right: 0,
+                                height: s.pullY,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                pointerEvents: 'none',
+                                zIndex: 40,
+                                overflow: 'hidden',
+                                transition: s.isPulling ? 'none' : 'height 0.28s cubic-bezier(0.16, 1, 0.3, 1)',
                               }}
-                            />
+                            >
+                              <div
+                                style={{
+                                  background: 'rgba(26, 29, 41, 0.95)',
+                                  backdropFilter: 'blur(12px)',
+                                  WebkitBackdropFilter: 'blur(12px)',
+                                  boxShadow: '0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px #33384c',
+                                  borderRadius: 20,
+                                  padding: '7px 16px',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 9,
+                                  fontSize: 13,
+                                  fontWeight: 600,
+                                  color: s.isRefreshing || s.refreshedToast ? '#3ecf8e' : s.pullY >= 50 ? '#b7a6ff' : '#9aa3b2',
+                                  transform: `scale(${Math.min(1, Math.max(0.75, s.pullY / 50))})`,
+                                  transition: 'color 0.2s ease, transform 0.15s ease',
+                                }}
+                              >
+                                {s.isRefreshing ? (
+                                  <>
+                                    <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                      <circle cx="12" cy="12" r="10" strokeOpacity="0.25" />
+                                      <path d="M12 2a10 10 0 0 1 10 10" />
+                                    </svg>
+                                    <span>Refreshing…</span>
+                                  </>
+                                ) : s.refreshedToast ? (
+                                  <>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                      <polyline points="20 6 9 17 4 12" />
+                                    </svg>
+                                    <span>Refreshed</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <svg
+                                      width="16"
+                                      height="16"
+                                      viewBox="0 0 24 24"
+                                      fill="none"
+                                      stroke="currentColor"
+                                      strokeWidth="2.2"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                      style={{
+                                        transform: `rotate(${Math.min(180, (s.pullY / 50) * 180)}deg)`,
+                                        transition: 'transform 0.1s ease',
+                                      }}
+                                    >
+                                      <path d="M12 5v14M5 12l7 7 7-7" />
+                                    </svg>
+                                    <span>{s.pullY >= 50 ? 'Release to refresh' : 'Pull to refresh'}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
                           )}
+
+                          {/* Pull-to-refresh invisible shield during active gesture so iframes don't steal pointer events */}
+                          {s.isPulling && (
+                            <div style={{ position: 'absolute', inset: 0, zIndex: 35, background: 'transparent' }} />
+                          )}
+
+                          <div
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              transform: `translateY(${s.pullY}px)`,
+                              transition: s.isPulling ? 'none' : 'transform 0.28s cubic-bezier(0.16, 1, 0.3, 1)',
+                            }}
+                          >
+                            {!hasNativeShell() && (
+                              <iframe
+                                key={s.refreshKey}
+                                className="safari-webview-frame"
+                                title="Browsing Session"
+                                src={s.webviewSrc || resolveWebTarget(resTitle).src}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  border: 'none',
+                                  display: 'block',
+                                  background: '#0e0f14',
+                                }}
+                              />
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}
@@ -3379,7 +3722,7 @@ export default class App extends React.Component<{}, AppState> {
                           )}
                           {s.stOpen && (
                             <>
-                              <div style={{ fontSize: 20, fontWeight: 700 }}>Storage</div>
+                              <div style={{ fontSize: 20, fontWeight: 700 }}>Settings &amp; Storage</div>
                               <div style={{ display: 'flex', height: 10, borderRadius: 5, overflow: 'hidden', background: '#2b3140' }}>
                                 <div style={{ width: `${(vMb / tMb * 100).toFixed(2)}%`, minWidth: 4, background: '#7c5cff' }} />
                                 <div style={{ width: `${(aMb / tMb * 100).toFixed(2)}%`, minWidth: 4, background: '#3ecf8e' }} />
@@ -3402,6 +3745,61 @@ export default class App extends React.Component<{}, AppState> {
                               >
                                 Select large files
                               </button>
+
+                              <div style={{ height: 1, background: '#2d3144', margin: '6px 0 2px' }} />
+
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                  <div style={{ fontSize: 15, fontWeight: 600, color: '#e8eaf0' }}>Recent searches</div>
+                                  <div style={{ fontSize: 13, color: '#9aa3b2' }}>
+                                    {s.hist.length === 0 ? 'None stored' : `${s.hist.length} search${s.hist.length === 1 ? '' : 'es'}`}
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={this.clearRecentSearches}
+                                  disabled={s.hist.length === 0}
+                                  style={{
+                                    minHeight: 48,
+                                    borderRadius: 14,
+                                    background: s.hist.length === 0
+                                      ? '#232736'
+                                      : s.histClearedToast
+                                      ? '#1c382b'
+                                      : '#2a273b',
+                                    color: s.hist.length === 0
+                                      ? '#646c80'
+                                      : s.histClearedToast
+                                      ? '#3ecf8e'
+                                      : '#ff8a8a',
+                                    border: s.hist.length === 0
+                                      ? '1px solid transparent'
+                                      : s.histClearedToast
+                                      ? '1px solid rgba(62, 207, 142, 0.4)'
+                                      : '1px solid rgba(255, 110, 110, 0.25)',
+                                    fontSize: 15,
+                                    fontWeight: 600,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: 8,
+                                    cursor: s.hist.length === 0 ? 'not-allowed' : 'pointer',
+                                    transition: 'all 0.18s ease',
+                                  }}
+                                >
+                                  {s.histClearedToast ? (
+                                    <>
+                                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                                      <span>Recent searches cleared</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" /></svg>
+                                      <span>Clear recent searches</span>
+                                    </>
+                                  )}
+                                </button>
+                              </div>
                             </>
                           )}
                         </div>
@@ -3906,8 +4304,20 @@ export default class App extends React.Component<{}, AppState> {
                           gap: 2,
                         }}
                       >
-                        <div style={{ padding: '6px 12px 8px', fontSize: 13, fontWeight: 600, color: '#9aa3b2' }}>
-                          Recently visited
+                        <div style={{ padding: '6px 12px 8px', fontSize: 13, fontWeight: 600, color: '#9aa3b2', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <span>Recently visited</span>
+                          {s.hist.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                this.clearRecentSearches()
+                              }}
+                              style={{ background: 'none', border: 0, color: '#8b94a5', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '2px 6px', borderRadius: 6 }}
+                            >
+                              Clear
+                            </button>
+                          )}
                         </div>
                         {s.hist.length === 0 && (
                           <div style={{ padding: '14px 12px', fontSize: 15, color: '#9aa3b2' }}>
@@ -3972,7 +4382,15 @@ export default class App extends React.Component<{}, AppState> {
                     }}
                   >
                     {pillsTop.map((p, idx) => (
-                      <button key={`pt-${idx}`} aria-label={p.title} onClick={p.go} style={p.style}>
+                      <button
+                        key={`pt-${idx}`}
+                        aria-label={p.title}
+                        onPointerDown={(e) => this.handlePillPointerDown(e, idx)}
+                        onPointerMove={(e) => this.handlePillPointerMove(e, idx)}
+                        onPointerUp={(e) => this.handlePillPointerUp(e, idx, gT.pitch, allTabs.length, p.go)}
+                        onPointerCancel={(e) => this.handlePillPointerUp(e, idx, gT.pitch, allTabs.length, p.go)}
+                        style={p.style}
+                      >
                         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {p.title}
                         </span>
@@ -4842,11 +5260,67 @@ export default class App extends React.Component<{}, AppState> {
                                       </button>
                                     )}
                                   </div>
-                                  <div style={{ height: 48, boxSizing: 'border-box', padding: '10px 4px 0' }}>
-                                    <div style={{ minWidth: 0 }}>
+                                  <div style={{ height: 48, boxSizing: 'border-box', padding: '10px 4px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <div style={{ minWidth: 0, flex: 1 }}>
                                       <div style={{ fontSize: 15, fontWeight: 600, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>{t.title}</div>
                                       <div style={{ fontSize: 13, color: '#9aa3b2' }}>{t.sub}</div>
                                     </div>
+                                    {vis.length > 1 && (
+                                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 'none', marginLeft: 8 }}>
+                                        <button
+                                          type="button"
+                                          title="Move tab earlier"
+                                          aria-label="Move tab earlier"
+                                          disabled={!t.canMoveLeft}
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            t.moveLeft?.()
+                                          }}
+                                          style={{
+                                            width: 32,
+                                            height: 32,
+                                            borderRadius: 16,
+                                            background: t.canMoveLeft ? '#25293a' : '#1a1c26',
+                                            border: '1px solid #363c52',
+                                            color: t.canMoveLeft ? '#e8eaf0' : '#4e556b',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            cursor: t.canMoveLeft ? 'pointer' : 'not-allowed',
+                                            fontSize: 14,
+                                            transition: 'all 0.15s ease',
+                                          }}
+                                        >
+                                          ←
+                                        </button>
+                                        <button
+                                          type="button"
+                                          title="Move tab later"
+                                          aria-label="Move tab later"
+                                          disabled={!t.canMoveRight}
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            t.moveRight?.()
+                                          }}
+                                          style={{
+                                            width: 32,
+                                            height: 32,
+                                            borderRadius: 16,
+                                            background: t.canMoveRight ? '#25293a' : '#1a1c26',
+                                            border: '1px solid #363c52',
+                                            color: t.canMoveRight ? '#e8eaf0' : '#4e556b',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            cursor: t.canMoveRight ? 'pointer' : 'not-allowed',
+                                            fontSize: 14,
+                                            transition: 'all 0.15s ease',
+                                          }}
+                                        >
+                                          →
+                                        </button>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               )}
@@ -4915,6 +5389,38 @@ export default class App extends React.Component<{}, AppState> {
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10" /><circle cx="16" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></svg>
                       </span>
                       Settings &amp; Storage
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => this.clearRecentSearches()}
+                      disabled={s.hist.length === 0}
+                      style={{
+                        minHeight: 60,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                        borderRadius: 16,
+                        padding: '0 12px',
+                        background: 'none',
+                        color: s.hist.length === 0 ? '#636c80' : (s.histClearedToast ? '#3ecf8e' : '#e8eaf0'),
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 16,
+                        textAlign: 'left',
+                        fontSize: 17,
+                        fontWeight: 600,
+                        cursor: s.hist.length === 0 ? 'not-allowed' : 'pointer',
+                        opacity: s.hist.length === 0 ? 0.6 : 1,
+                      }}
+                    >
+                      <span style={{ flex: 'none', width: 40, height: 40, borderRadius: 12, background: s.histClearedToast ? '#1c382b' : '#2d2a55', color: s.histClearedToast ? '#3ecf8e' : '#ff8a8a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        {s.histClearedToast ? (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        ) : (
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" /></svg>
+                        )}
+                      </span>
+                      {s.histClearedToast ? 'Recent Searches Cleared' : `Clear Recent Searches${s.hist.length > 0 ? ` (${s.hist.length})` : ''}`}
                     </button>
 
                     <button
