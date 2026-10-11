@@ -1,0 +1,6 @@
+{
+  "summary":  "Plan to redesign the floating download trigger into a medium squircle positioned vertically centered on the right edge, remove text clutter, and strip pre-configured placeholder titles and mock chips from the download modal sheet.",
+  "updatedAt":  "2026-10-10T23:45:31.000836768Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

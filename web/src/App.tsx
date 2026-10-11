@@ -155,6 +155,7 @@ interface AppState {
   detectedVideo: DetectedVideo | null
   webviewSrc: string
   webviewUrl: string
+  searchFocused: boolean
   canGoBackNative?: boolean
   canGoForwardNative?: boolean
 }
@@ -164,27 +165,54 @@ const STORAGE_KEY_HIST = 'vd-visited-v1'
 const STORAGE_KEY_FAVS = 'vd-favs-v1'
 const STORAGE_KEY_DH = 'vd-dl-history-v1'
 
-const DEFAULT_FAVS: FavItem[] = [
-  { label: 'YouTube', letter: 'Y', url: 'youtube.com', bg: '#2d2a55', ink: '#b7a6ff' },
-  { label: 'TikTok', letter: 'T', url: 'tiktok.com', bg: '#2d2a55', ink: '#b7a6ff' },
-  { label: 'Instagram', letter: 'I', url: 'instagram.com', bg: '#2d2a55', ink: '#b7a6ff' },
-  { label: 'X', letter: 'X', url: 'x.com', bg: '#2d2a55', ink: '#b7a6ff' },
-]
+const DEFAULT_FAVS: FavItem[] = []
 
-function resolveWebTarget(text: string): { src: string; url: string } {
+function getDisplayDomain(urlOrQuery: string): string {
+  if (!urlOrQuery) return ''
+  const trimmed = urlOrQuery.trim()
+  if (!trimmed) return ''
+
+  if (trimmed.includes('google.') || trimmed.includes('google.com')) return 'google.com'
+  if (trimmed.includes('bing.') || trimmed.includes('bing.com')) return 'bing.com'
+  if (trimmed.includes('youtube.') || trimmed.includes('youtu.be')) return 'youtube.com'
+
+  try {
+    const raw = trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`
+    const u = new URL(raw)
+    let host = u.hostname.toLowerCase().replace(/^www\./, '')
+    if (host.includes('google.')) return 'google.com'
+    if (host.includes('bing.')) return 'bing.com'
+    if (host.includes('youtube.') || host.includes('youtu.be')) return 'youtube.com'
+    if (host) return host
+  } catch {}
+
+  if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/i.test(trimmed)) {
+    return trimmed.split('/')[0].replace(/^www\./, '')
+  }
+
+  // Search query maps to Google
+  return 'google.com'
+}
+
+function resolveWebTarget(text: string): { src: string; url: string; domain: string } {
   const txt = text.trim()
-  if (!txt) return { src: '', url: '' }
+  if (!txt) return { src: '', url: '', domain: '' }
 
   const ytMatch = txt.match(/(?:youtube\.com\/(?:watch\?v=|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/)
   if (ytMatch) {
     return {
       src: `https://www.youtube-nocookie.com/embed/${ytMatch[1]}?autoplay=1&enablejsapi=1&playsinline=1`,
       url: `https://www.youtube.com/watch?v=${ytMatch[1]}`,
+      domain: 'youtube.com',
     }
   }
 
   if (/\.(mp4|mov|webm|m4v|m3u8)(\?|$)/i.test(txt)) {
-    return { src: txt, url: txt }
+    let d = 'media'
+    try {
+      d = new URL(txt.startsWith('http') ? txt : `https://${txt}`).hostname.replace(/^www\./, '')
+    } catch {}
+    return { src: txt, url: txt, domain: d }
   }
 
   if (/^https?:\/\//i.test(txt)) {
@@ -194,24 +222,32 @@ function resolveWebTarget(text: string): { src: string; url: string } {
         return {
           src: `https://www.youtube-nocookie.com/embed/${vid}?autoplay=1&enablejsapi=1&playsinline=1`,
           url: `https://www.youtube.com/watch?v=${vid}`,
+          domain: 'youtube.com',
         }
       }
-      return { src: `/api/webview-search?q=trending`, url: txt }
+      return { src: `/api/webview-search?q=trending`, url: txt, domain: 'youtube.com' }
     }
-    return { src: txt, url: txt }
+    let d = ''
+    try {
+      d = new URL(txt).hostname.replace(/^www\./, '')
+    } catch {}
+    return { src: txt, url: txt, domain: d || txt }
   }
 
   if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(\/.*)?$/i.test(txt)) {
     if (txt.includes('youtube.com') || txt.includes('youtu.be')) {
-      return { src: `/api/webview-search?q=trending`, url: `https://${txt}` }
+      return { src: `/api/webview-search?q=trending`, url: `https://${txt}`, domain: 'youtube.com' }
     }
-    return { src: `https://${txt}`, url: `https://${txt}` }
+    const full = `https://${txt}`
+    let d = txt.split('/')[0].replace(/^www\./, '')
+    return { src: full, url: full, domain: d }
   }
 
-  // Generic search query (e.g. "jaj"): redirect as an actual search engine
+  // Generic search query (e.g. "dog"): redirect as Google search
   return {
-    src: `https://www.bing.com/search?q=${encodeURIComponent(txt)}`,
-    url: `https://www.bing.com/search?q=${encodeURIComponent(txt)}`,
+    src: `https://www.google.com/search?q=${encodeURIComponent(txt)}&igu=1`,
+    url: `https://www.google.com/search?q=${encodeURIComponent(txt)}`,
+    domain: 'google.com',
   }
 }
 
@@ -407,19 +443,13 @@ export default class App extends React.Component<{}, AppState> {
       detectedVideo: null,
       webviewSrc: '',
       webviewUrl: '',
+      searchFocused: false,
     }
   }
 
   handleResize = () => {
     if (typeof window !== 'undefined') {
-      const isDevice = hasNativeShell() || window.innerWidth < 860 || window.innerHeight < 900
-      if (isDevice) {
-        this.setState({ scale: 1 }, this.syncBrowserPane)
-      } else {
-        const sw = (window.innerWidth - 32) / 900
-        const sh = (window.innerHeight - 32) / 1260
-        this.setState({ scale: Math.min(sw, sh, 1) }, this.syncBrowserPane)
-      }
+      this.setState({ scale: 1 }, this.syncBrowserPane)
     }
   }
 
@@ -435,6 +465,8 @@ export default class App extends React.Component<{}, AppState> {
         this.setState({ sheet: true })
       } else if (data.type === 'search-query' && data.payload?.query) {
         this.executeSearch(data.payload.query)
+      } else if (data.type === 'nav' && data.payload?.url) {
+        this.setState({ webviewUrl: data.payload.url })
       }
     }
   }
@@ -458,6 +490,7 @@ export default class App extends React.Component<{}, AppState> {
 
     this.setState({
       screen: 'browse',
+      searchFocused: false,
       seq: { key: 'search:' + query, text: query, phase: initialPhase, t0: Date.now() },
       sp: 0,
       q: query,
@@ -485,32 +518,28 @@ export default class App extends React.Component<{}, AppState> {
             title: info.title || title || 'Detected Video',
             thumbnail: info.thumbnail || thumbnail,
             durationSec: info.durationSec,
-            formats: formats.length > 0 ? formats : [
-              { id: 'v720', label: '720p HD MP4', meta: 'Video · H.264' },
-              { id: 'v480', label: '480p MP4', meta: 'Video · smaller file' },
-              { id: 'a', label: 'Audio only', meta: 'M4A · for the music loop' },
-            ],
+            formats,
           },
-          fmt: formats[0]?.id || 'v720',
+          fmt: formats[0]?.id || '',
         })
         return
       }
     } catch {}
 
-    // Fallback if offline
+    // Fallback if offline or direct link
+    const isDirect = /\.(mp4|mov|webm|m4v|m3u8)(\?|$)/i.test(url)
+    const directFormats: FormatOption[] = isDirect
+      ? [{ id: 'orig', label: 'Original Stream', meta: 'Direct Stream' }]
+      : []
+
     this.setState({
       detectedVideo: {
         url,
-        title: title || 'Detected Video',
+        title: title || (isDirect ? 'Direct Media' : ''),
         thumbnail,
-        formats: [
-          { id: 'v1080', label: '1080p MP4', meta: 'Video · Full HD' },
-          { id: 'v720', label: '720p MP4', meta: 'Video · H.264' },
-          { id: 'v480', label: '480p MP4', meta: 'Video · smaller file' },
-          { id: 'a', label: 'Audio only', meta: 'M4A · for the music loop' },
-        ],
+        formats: directFormats,
       },
-      fmt: 'v720',
+      fmt: directFormats[0]?.id || '',
     })
   }
 
@@ -528,6 +557,7 @@ export default class App extends React.Component<{}, AppState> {
   componentDidMount() {
     this.handleResize()
     window.addEventListener('resize', this.handleResize)
+    window.addEventListener('orientationchange', this.handleResize)
     window.addEventListener('message', this.handleMessage)
 
     // Download jobs progress ticker
@@ -590,6 +620,7 @@ export default class App extends React.Component<{}, AppState> {
       this.setState({
         canGoBackNative: e.canGoBack,
         canGoForwardNative: e.canGoForward,
+        webviewUrl: e.url || this.state.webviewUrl,
       })
     })
 
@@ -873,6 +904,7 @@ export default class App extends React.Component<{}, AppState> {
     clearInterval(this.tick)
     clearInterval(this.rtick)
     window.removeEventListener('resize', this.handleResize)
+    window.removeEventListener('orientationchange', this.handleResize)
     window.removeEventListener('message', this.handleMessage)
   }
 
@@ -924,7 +956,7 @@ export default class App extends React.Component<{}, AppState> {
       fmtLabel: f.label,
       pct: 0,
       status: 'downloading',
-      src: video?.url || 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      src: video?.url || '',
       audio: isAudio,
     }
 
@@ -1196,14 +1228,9 @@ export default class App extends React.Component<{}, AppState> {
 
     const fmts: FormatOption[] = s.detectedVideo?.formats?.length
       ? s.detectedVideo.formats
-      : [
-          { id: 'v1080', label: '1080p MP4', meta: 'Video · Full HD' },
-          { id: 'v720', label: '720p MP4', meta: 'Video · H.264' },
-          { id: 'v480', label: '480p MP4', meta: 'Video · smaller file' },
-          { id: 'a', label: 'Audio only', meta: 'M4A · for the music loop' },
-        ]
+      : []
 
-    const rawRecents = s.hist.length ? s.hist : ['lofi study mix', 'timelapse 4k', 'movie trailers']
+    const rawRecents = s.hist
     const clip = (t: string) => {
       const w = t.trim().split(/\s+/)
       let o = w.slice(0, 2).join(' ')
@@ -1211,9 +1238,9 @@ export default class App extends React.Component<{}, AppState> {
       return o !== t.trim() ? o + '…' : o
     }
 
-    const fw = s.favs.length * 120
-    const rw = rawRecents.length * 120
-    const norm = (v: number, w: number) => Math.round((((v % w) + w) % w) - w)
+    const fw = Math.max(120, s.favs.length * 120)
+    const rw = Math.max(120, rawRecents.length * 120)
+    const norm = (v: number, w: number) => (w > 0 ? Math.round((((v % w) + w) % w) - w) : 0)
 
     const mk = (key: 'fx' | 'rx') => ({
       onPointerDown: (e: React.PointerEvent) => {
@@ -1269,18 +1296,19 @@ export default class App extends React.Component<{}, AppState> {
       this.setState({ seq: { key, text, phase: 'fade' }, sp: 0, q: text })
     }
     const eio = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
-    const dist = ph === 'scan' ? 512 * eio(s.sp) : ph === 'load' || ph === 'done' ? 512 : 0
-    const barOff =
+    const barUpP =
       ph === 'scan'
-        ? -dist
+        ? eio(s.sp)
         : ph === 'load' || ph === 'done'
-          ? -512
+          ? 1
           : ph === 'rdown'
-            ? -512 + 512 * eio(s.sp)
-            : 0
+            ? Math.max(0, 1 - eio(s.sp))
+            : (s.webviewSrc && ph !== 'rfade')
+              ? 1
+              : 0
     const clipBv =
       ph === 'scan'
-        ? Math.max(0, Math.round(dist - 22))
+        ? Math.max(0, Math.round(512 * barUpP - 22))
         : ph === 'load' || ph === 'done'
           ? 9999
           : 0
@@ -1307,7 +1335,6 @@ export default class App extends React.Component<{}, AppState> {
         op: [1, 0.8, 0.55, 0.35, 0.2][i],
       }
     })
-    const barW = Math.round(560 - 68 * Math.min(1, Math.max(0, -barOff / 512)))
     const laser =
       ph === 'fade'
         ? s.sp
@@ -1322,7 +1349,22 @@ export default class App extends React.Component<{}, AppState> {
     const runOp = (ph === 'load' ? 1 : ph === 'done' ? 1 - s.sp : 0) * (sq && sq.skip ? 0 : 1)
     const loading = ph === 'load'
     const status = sq ? 'Looking up ' + sq.text.slice(0, 40) + '…' : ''
-    const qText = sq && ph === 'fade' ? sq.text.slice(0, Math.ceil(s.sp * sq.text.length)) : s.q
+    const isBarUp = Boolean(
+      barUpP > 0.05 ||
+      (sq && (ph === 'scan' || ph === 'load' || ph === 'done')) ||
+      Boolean(s.webviewSrc && (!sq || ph !== 'rdown'))
+    )
+
+    const activeDomain = getDisplayDomain(s.webviewUrl || (sq ? sq.text : s.q))
+
+    let qText = s.q
+    if (s.searchFocused) {
+      qText = s.q
+    } else if (isBarUp) {
+      qText = activeDomain
+    } else if (sq && ph === 'fade') {
+      qText = sq.text.slice(0, Math.ceil(s.sp * sq.text.length))
+    }
     const qAlpha = (ph === 'fade' ? 0.3 + 0.7 * s.sp : 1) * (1 - s.tsp)
     const isHomeNow = s.screen === 'browse' && !s.webviewSrc && (!s.seq || s.seq.phase === 'rfade')
     const resTop = s.tabs.length ? 164 : 140
@@ -1876,13 +1918,35 @@ export default class App extends React.Component<{}, AppState> {
       width: `${pct}%`,
     })
 
-    const isDevice = hasNativeShell() || (typeof window !== 'undefined' && (window.innerWidth < 860 || window.innerHeight < 900))
-
     return (
-      <div className="ipad-viewport-wrapper" style={isDevice ? { width: '100vw', height: '100vh', padding: 0 } : undefined}>
-        <div className="ipad-scaler" style={isDevice ? { width: '100vw', height: '100vh', transform: 'none' } : { transform: `scale(${s.scale})` }}>
+      <div
+        className="ipad-viewport-wrapper"
+        style={{
+          width: '100vw',
+          height: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          justifyContent: 'stretch',
+          overflow: 'hidden',
+          padding: 0,
+          margin: 0,
+          background: '#0e0f14',
+        }}
+      >
+        <div
+          className="ipad-scaler"
+          style={{
+            width: '100%',
+            height: '100%',
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
           <div
-            style={isDevice ? {
+            style={{
               width: '100%',
               height: '100%',
               boxSizing: 'border-box',
@@ -1893,50 +1957,17 @@ export default class App extends React.Component<{}, AppState> {
               boxShadow: 'none',
               display: 'flex',
               flexDirection: 'column',
-            } : {
-              width: 900,
-              height: 1260,
-              boxSizing: 'border-box',
-              padding: 40,
-              borderRadius: 68,
-              background: '#24262d',
-              position: 'relative',
-              boxShadow: 'inset 0 0 0 3px #3a3d46',
+              flex: 1,
+              overflow: 'hidden',
             }}
           >
-            {/* Camera dot */}
-            {!isDevice && (
-              <div
-                style={{
-                  position: 'absolute',
-                  top: 16,
-                  left: '50%',
-                  marginLeft: -5,
-                  width: 10,
-                  height: 10,
-                  borderRadius: 5,
-                  background: '#0a0a0c',
-                }}
-              />
-            )}
-
             {/* Inner screen frame */}
             <div
-              style={isDevice ? {
+              style={{
                 width: '100%',
                 height: '100%',
                 flex: 1,
                 borderRadius: 0,
-                background: '#0e0f14',
-                color: '#e8eaf0',
-                position: 'relative',
-                overflow: 'hidden',
-                display: 'flex',
-                flexDirection: 'column',
-              } : {
-                width: 820,
-                height: 1180,
-                borderRadius: 30,
                 background: '#0e0f14',
                 color: '#e8eaf0',
                 position: 'relative',
@@ -1951,7 +1982,7 @@ export default class App extends React.Component<{}, AppState> {
                   flex: 1,
                   position: 'relative',
                   overflow: 'hidden',
-                  padding: (showResults && s.screen === 'browse') ? 0 : '0 108px',
+                  padding: (showResults && s.screen === 'browse') ? 0 : '0 clamp(16px, 4vw, 48px)',
                   boxSizing: 'border-box',
                 }}
               >
@@ -1974,31 +2005,6 @@ export default class App extends React.Component<{}, AppState> {
                         pointerEvents: sq ? 'none' : 'auto',
                       }}
                     >
-                      {/* Logo and Brand Title */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                        <div
-                          style={{
-                            width: 48,
-                            height: 48,
-                            borderRadius: 14,
-                            background: '#7c5cff',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <div
-                            style={{
-                              borderLeft: '16px solid #fff',
-                              borderTop: '9px solid transparent',
-                              borderBottom: '9px solid transparent',
-                              marginLeft: 4,
-                            }}
-                          />
-                        </div>
-                        <div style={{ fontSize: 34, fontWeight: 700 }}>Video Downloader</div>
-                      </div>
-
                       <div style={{ position: 'relative', width: '100%', maxWidth: 560 }}>
                         <div
                           style={{
@@ -2013,72 +2019,33 @@ export default class App extends React.Component<{}, AppState> {
                           <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
                             <div style={{ fontSize: 13, fontWeight: 600, color: '#9aa3b2' }}>Favorites</div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                              <div
-                                {...fm}
-                                style={{
-                                  touchAction: 'pan-y',
-                                  cursor: 'grab',
-                                  flex: 1,
-                                  minWidth: 0,
-                                  overflow: 'hidden',
-                                  maskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
-                                  WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
-                                }}
-                              >
+                              {favView.length > 0 && (
                                 <div
+                                  {...fm}
                                   style={{
-                                    display: 'flex',
-                                    width: 'max-content',
-                                    transform: `translateX(${norm(s.fx, fw)}px)`,
+                                    touchAction: 'pan-y',
+                                    cursor: 'grab',
+                                    flex: 1,
+                                    minWidth: 0,
+                                    overflow: 'hidden',
+                                    maskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
+                                    WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
                                   }}
                                 >
-                                  {favView.map((f, idx) => (
-                                    <button
-                                      key={`f1-${idx}`}
-                                      onClick={f.open}
-                                      style={{
-                                        width: f.w,
-                                        opacity: f.o,
-                                        overflow: 'hidden',
-                                        flex: 'none',
-                                        minHeight: 96,
-                                        background: 'none',
-                                        color: '#e8eaf0',
-                                        display: 'flex',
-                                        flexDirection: 'column',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        gap: 10,
-                                      }}
-                                    >
-                                      <span
-                                        style={{
-                                          flex: 'none',
-                                          width: 60,
-                                          height: 60,
-                                          borderRadius: 16,
-                                          background: f.bg,
-                                          color: f.ink,
-                                          fontSize: 20,
-                                          fontWeight: 700,
-                                          display: 'flex',
-                                          alignItems: 'center',
-                                          justifyContent: 'center',
-                                        }}
-                                      >
-                                        {f.letter}
-                                      </span>
-                                      <span style={{ fontSize: 13 }}>{f.label}</span>
-                                    </button>
-                                  ))}
-                                  <div aria-hidden="true" style={{ display: 'flex' }}>
-                                    {favView.map((g, idx) => (
+                                  <div
+                                    style={{
+                                      display: 'flex',
+                                      width: 'max-content',
+                                      transform: `translateX(${norm(s.fx, fw)}px)`,
+                                    }}
+                                  >
+                                    {favView.map((f, idx) => (
                                       <button
-                                        key={`f2-${idx}`}
-                                        onClick={g.open}
+                                        key={`f1-${idx}`}
+                                        onClick={f.open}
                                         style={{
-                                          width: g.w,
-                                          opacity: g.o,
+                                          width: f.w,
+                                          opacity: f.o,
                                           overflow: 'hidden',
                                           flex: 'none',
                                           minHeight: 96,
@@ -2097,8 +2064,8 @@ export default class App extends React.Component<{}, AppState> {
                                             width: 60,
                                             height: 60,
                                             borderRadius: 16,
-                                            background: g.bg,
-                                            color: g.ink,
+                                            background: f.bg,
+                                            color: f.ink,
                                             fontSize: 20,
                                             fontWeight: 700,
                                             display: 'flex',
@@ -2106,14 +2073,55 @@ export default class App extends React.Component<{}, AppState> {
                                             justifyContent: 'center',
                                           }}
                                         >
-                                          {g.letter}
+                                          {f.letter}
                                         </span>
-                                        <span style={{ fontSize: 13 }}>{g.label}</span>
+                                        <span style={{ fontSize: 13 }}>{f.label}</span>
                                       </button>
                                     ))}
+                                    <div aria-hidden="true" style={{ display: 'flex' }}>
+                                      {favView.map((g, idx) => (
+                                        <button
+                                          key={`f2-${idx}`}
+                                          onClick={g.open}
+                                          style={{
+                                            width: g.w,
+                                            opacity: g.o,
+                                            overflow: 'hidden',
+                                            flex: 'none',
+                                            minHeight: 96,
+                                            background: 'none',
+                                            color: '#e8eaf0',
+                                            display: 'flex',
+                                            flexDirection: 'column',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            gap: 10,
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              flex: 'none',
+                                              width: 60,
+                                              height: 60,
+                                              borderRadius: 16,
+                                              background: g.bg,
+                                              color: g.ink,
+                                              fontSize: 20,
+                                              fontWeight: 700,
+                                              display: 'flex',
+                                              alignItems: 'center',
+                                              justifyContent: 'center',
+                                            }}
+                                          >
+                                            {g.letter}
+                                          </span>
+                                          <span style={{ fontSize: 13 }}>{g.label}</span>
+                                        </button>
+                                      ))}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
+                              )}
                               <button
                                 aria-label="Add favorite"
                                 onClick={() => {
@@ -2155,81 +2163,33 @@ export default class App extends React.Component<{}, AppState> {
                             </div>
                           </div>
 
-                          {/* Recent Searches Section */}
-                          <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: '#9aa3b2' }}>Recent searches</div>
-                            <div
-                              {...rm}
-                              style={{
-                                touchAction: 'pan-y',
-                                cursor: 'grab',
-                                overflow: 'hidden',
-                                maskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
-                                WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
-                              }}
-                            >
+                          {/* Recent Searches Section (only rendered when there are searches) */}
+                          {rawRecents.length > 0 && (
+                            <div style={{ width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: '#9aa3b2' }}>Recent searches</div>
                               <div
+                                {...rm}
                                 style={{
-                                  display: 'flex',
-                                  width: 'max-content',
-                                  transform: `translateX(${norm(s.rx, rw)}px)`,
+                                  touchAction: 'pan-y',
+                                  cursor: 'grab',
+                                  overflow: 'hidden',
+                                  maskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
+                                  WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
                                 }}
                               >
-                                {rawRecents.map((t, idx) => (
-                                  <button
-                                    key={`r1-${idx}`}
-                                    onClick={start('rec:' + t, t, 'rx')}
-                                    style={{
-                                      opacity: mine('rec:' + t),
-                                      width: 120,
-                                      flex: 'none',
-                                      minHeight: 96,
-                                      background: 'none',
-                                      color: '#e8eaf0',
-                                      display: 'flex',
-                                      flexDirection: 'column',
-                                      alignItems: 'center',
-                                      justifyContent: 'center',
-                                      gap: 10,
-                                    }}
-                                  >
-                                    <span
-                                      style={{
-                                        width: 60,
-                                        height: 60,
-                                        borderRadius: 16,
-                                        background: '#2d2a55',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                      }}
-                                    >
-                                      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#b7a6ff" strokeWidth="2">
-                                        <circle cx="12" cy="12" r="9" />
-                                        <path d="M12 7v5l3 2" />
-                                      </svg>
-                                    </span>
-                                    <span
-                                      style={{
-                                        fontSize: 13,
-                                        textAlign: 'center',
-                                        maxWidth: 104,
-                                        overflow: 'hidden',
-                                        whiteSpace: 'nowrap',
-                                        textOverflow: 'ellipsis',
-                                      }}
-                                    >
-                                      {clip(t)}
-                                    </span>
-                                  </button>
-                                ))}
-                                <div aria-hidden="true" style={{ display: 'flex' }}>
-                                  {rawRecents.map((q, idx) => (
+                                <div
+                                  style={{
+                                    display: 'flex',
+                                    width: 'max-content',
+                                    transform: `translateX(${norm(s.rx, rw)}px)`,
+                                  }}
+                                >
+                                  {rawRecents.map((t, idx) => (
                                     <button
-                                      key={`r2-${idx}`}
-                                      onClick={start('rec:' + q, q, 'rx')}
+                                      key={`r1-${idx}`}
+                                      onClick={start('rec:' + t, t, 'rx')}
                                       style={{
-                                        opacity: mine('rec:' + q),
+                                        opacity: mine('rec:' + t),
                                         width: 120,
                                         flex: 'none',
                                         minHeight: 96,
@@ -2268,14 +2228,64 @@ export default class App extends React.Component<{}, AppState> {
                                           textOverflow: 'ellipsis',
                                         }}
                                       >
-                                        {clip(q)}
+                                        {clip(t)}
                                       </span>
                                     </button>
                                   ))}
+                                  <div aria-hidden="true" style={{ display: 'flex' }}>
+                                    {rawRecents.map((q, idx) => (
+                                      <button
+                                        key={`r2-${idx}`}
+                                        onClick={start('rec:' + q, q, 'rx')}
+                                        style={{
+                                          opacity: mine('rec:' + q),
+                                          width: 120,
+                                          flex: 'none',
+                                          minHeight: 96,
+                                          background: 'none',
+                                          color: '#e8eaf0',
+                                          display: 'flex',
+                                          flexDirection: 'column',
+                                          alignItems: 'center',
+                                          justifyContent: 'center',
+                                          gap: 10,
+                                        }}
+                                      >
+                                        <span
+                                          style={{
+                                            width: 60,
+                                            height: 60,
+                                            borderRadius: 16,
+                                            background: '#2d2a55',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                          }}
+                                        >
+                                          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#b7a6ff" strokeWidth="2">
+                                            <circle cx="12" cy="12" r="9" />
+                                            <path d="M12 7v5l3 2" />
+                                          </svg>
+                                        </span>
+                                        <span
+                                          style={{
+                                            fontSize: 13,
+                                            textAlign: 'center',
+                                            maxWidth: 104,
+                                            overflow: 'hidden',
+                                            whiteSpace: 'nowrap',
+                                            textOverflow: 'ellipsis',
+                                          }}
+                                        >
+                                          {clip(q)}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  </div>
                                 </div>
                               </div>
                             </div>
-                          </div>
+                          )}
                         </div>
 
                         {/* Private Browsing Badge Overlay */}
@@ -2324,16 +2334,20 @@ export default class App extends React.Component<{}, AppState> {
                         position: 'absolute',
                         left: 0,
                         right: 0,
-                        top: '50%',
-                        marginTop: -30,
+                        top: `calc(${(1 - barUpP) * 50}% + ${Math.round(-30 + 78 * barUpP)}px)`,
                         display: 'flex',
                         justifyContent: 'center',
-                        transform: `translateY(${barOff}px)`,
                         zIndex: 35,
                         pointerEvents: 'auto',
                       }}
                     >
-                      <div style={{ position: 'relative', width: '100%', maxWidth: barW }}>
+                      <div
+                        style={{
+                          position: 'relative',
+                          width: '100%',
+                          maxWidth: barUpP > 0.5 ? 'min(492px, calc(100% - 250px))' : 'min(560px, calc(100% - 32px))',
+                        }}
+                      >
                         <div
                           style={{
                             position: 'absolute',
@@ -2351,14 +2365,15 @@ export default class App extends React.Component<{}, AppState> {
                         />
                         {runner && (
                           <svg
-                            width="502"
-                            height="70"
                             viewBox="0 0 502 70"
+                            preserveAspectRatio="none"
                             fill="none"
                             style={{
                               position: 'absolute',
                               left: -5,
                               top: -5,
+                              width: 'calc(100% + 10px)',
+                              height: 'calc(100% + 10px)',
                               pointerEvents: 'none',
                               opacity: runOp,
                               filter: 'drop-shadow(0 0 7px #9b83ff)',
@@ -2463,11 +2478,19 @@ export default class App extends React.Component<{}, AppState> {
                           aria-label="Search or enter website name"
                           placeholder="Search or enter website name"
                           value={qText}
+                          onFocus={() => {
+                            this.setState({
+                              searchFocused: true,
+                              q: isBarUp ? (s.webviewUrl || s.q || '') : s.q,
+                            })
+                          }}
+                          onBlur={() => this.setState({ searchFocused: false })}
                           onChange={(e) => this.setState({ q: e.target.value })}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter') return
                             const t = (s.q || '').trim()
                             if (!t) return
+                            ;(e.currentTarget as HTMLInputElement).blur()
                             this.executeSearch(t)
                           }}
                           style={{
@@ -2480,11 +2503,11 @@ export default class App extends React.Component<{}, AppState> {
                             color: `rgba(232,234,240,${qAlpha})`,
                             fontSize: 17,
                             fontFamily: 'inherit',
-                            padding: s.q ? '0 52px 0 58px' : '0 24px 0 58px',
+                            padding: (s.searchFocused ? s.q : (isBarUp ? '' : s.q)) ? '0 52px 0 58px' : '0 24px 0 58px',
                             boxShadow: '0 8px 28px rgba(0,0,0,.35)',
                           }}
                         />
-                        {s.q && (
+                        {(s.searchFocused ? s.q : (isBarUp ? '' : s.q)) && (
                           <button
                             aria-label="Clear search"
                             onClick={() => this.setState({ q: '' })}
@@ -3451,35 +3474,6 @@ export default class App extends React.Component<{}, AppState> {
                 </div>
               )}
 
-              {/* Floating Download Button on Home */}
-              {s.screen === 'browse' && !s.sheet && !s.sw && !s.dw && (
-                <button
-                  aria-label="Download"
-                  onClick={() => this.setState({ sheet: true })}
-                  style={{
-                    position: 'absolute',
-                    right: 28,
-                    bottom: (s.jobs.some((j) => j.status === 'downloading') || !!s.playing) ? 112 : 28,
-                    zIndex: 3,
-                    minHeight: 60,
-                    padding: '0 24px 0 18px',
-                    borderRadius: 30,
-                    background: '#7c5cff',
-                    color: '#fff',
-                    fontSize: 18,
-                    fontWeight: 700,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    boxShadow: '0 12px 32px rgba(0,0,0,.5)',
-                  }}
-                >
-                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14" />
-                  </svg>
-                  {s.detectedVideo ? `Save Video` : `Download`}
-                </button>
-              )}
 
               {/* Bottom Transfer Strip / Playing bar */}
               {(active.length > 0 || !!s.playing) && (
@@ -3895,9 +3889,10 @@ export default class App extends React.Component<{}, AppState> {
                       <div
                         style={{
                           position: 'absolute',
-                          left: 414,
+                          right: 86,
                           top: 116,
                           width: 320,
+                          maxWidth: 'calc(100% - 100px)',
                           boxSizing: 'border-box',
                           padding: 10,
                           borderRadius: 22,
@@ -3905,7 +3900,7 @@ export default class App extends React.Component<{}, AppState> {
                           boxShadow: '0 16px 40px rgba(0,0,0,.55),inset 0 0 0 1px #2d3144',
                           opacity: s.hmp,
                           transform: `translateY(${Math.round((1 - s.hmp) * -8)}px) scale(${(0.96 + 0.04 * s.hmp).toFixed(3)})`,
-                          transformOrigin: '290px 0',
+                          transformOrigin: 'top right',
                           display: 'flex',
                           flexDirection: 'column',
                           gap: 2,
@@ -4380,11 +4375,89 @@ export default class App extends React.Component<{}, AppState> {
                 </>
               )}
 
+              {/* Floating Download Squircle Action Button (Vertically Centered on Right Edge) */}
+              {s.screen === 'browse' && !s.sw && s.swp === 0 && !s.dw && (
+                <button
+                  aria-label="Download media"
+                  onClick={() => this.setState({ sheet: !s.sheet })}
+                  style={{
+                    position: 'absolute',
+                    right: 24,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    width: 56,
+                    height: 56,
+                    borderRadius: 16,
+                    background: 'linear-gradient(135deg, #8a6cfc, #6c47eb)',
+                    border: '1px solid rgba(255, 255, 255, 0.22)',
+                    boxShadow: '0 8px 24px rgba(124, 92, 255, 0.45), 0 2px 8px rgba(0,0,0,0.3)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    zIndex: 42,
+                    padding: 0,
+                    transition: 'transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.15s ease',
+                  }}
+                  onMouseDown={(e) => {
+                    e.currentTarget.style.transform = 'translateY(-50%) scale(0.92)'
+                  }}
+                  onMouseUp={(e) => {
+                    e.currentTarget.style.transform = 'translateY(-50%) scale(1)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'translateY(-50%) scale(1)'
+                  }}
+                >
+                  <svg
+                    width="24"
+                    height="24"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="#ffffff"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 3v12" />
+                    <path d="M7 10l5 5 5-5" />
+                    <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+                  </svg>
+                  {s.detectedVideo && (
+                    <span
+                      style={{
+                        position: 'absolute',
+                        top: -2,
+                        right: -2,
+                        width: 12,
+                        height: 12,
+                        borderRadius: 6,
+                        background: '#34d399',
+                        border: '2px solid #0e0f14',
+                        boxShadow: '0 0 8px #34d399',
+                      }}
+                    />
+                  )}
+                </button>
+              )}
+
               {/* Format Selection Bottom Sheet (sheet) */}
               {s.sheet && (
                 <>
-                  <div onClick={() => this.setState({ sheet: false })} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.55)', zIndex: 99 }} />
+                  <div
+                    className="sheet-backdrop-fade"
+                    onClick={() => this.setState({ sheet: false })}
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      background: 'rgba(0,0,0,.55)',
+                      backdropFilter: 'blur(3px)',
+                      WebkitBackdropFilter: 'blur(3px)',
+                      zIndex: 99,
+                    }}
+                  />
                   <aside
+                    className="sheet-slide-up"
                     style={{
                       position: 'absolute',
                       left: 0,
@@ -4395,54 +4468,200 @@ export default class App extends React.Component<{}, AppState> {
                       padding: '14px 28px 32px',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: 14,
+                      gap: 16,
                       zIndex: 100,
+                      boxShadow: '0 -16px 40px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08)',
+                      animation: 'sheetSlideUp 0.36s cubic-bezier(0.16, 1, 0.3, 1) both',
+                      willChange: 'transform, opacity',
                     }}
                   >
                     <div style={{ width: 48, height: 5, borderRadius: 3, background: '#4a5068', alignSelf: 'center' }} />
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ fontSize: 20, fontWeight: 600 }}>Save this video</div>
-                      <button aria-label="Close" onClick={() => this.setState({ sheet: false })} style={{ background: 'none', color: '#9aa3b2', fontSize: 26, minWidth: 44, minHeight: 44 }}>
+                      <div style={{ fontSize: 20, fontWeight: 700 }}>
+                        {s.detectedVideo ? 'Save detected video' : 'Download Video'}
+                      </div>
+                      <button
+                        aria-label="Close"
+                        onClick={() => this.setState({ sheet: false })}
+                        style={{
+                          background: 'none',
+                          border: 0,
+                          color: '#9aa3b2',
+                          fontSize: 26,
+                          minWidth: 44,
+                          minHeight: 44,
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
                         ×
                       </button>
                     </div>
-                    <div style={{ fontSize: 14, color: '#9aa3b2', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {s.detectedVideo?.title || 'Mountain Road Timelapse'}
-                    </div>
-                    {fmts.map((f) => (
-                      <button
-                        key={f.id}
-                        onClick={() => this.setState({ fmt: f.id })}
+
+                    {s.detectedVideo ? (
+                      <>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <div
+                            style={{
+                              fontSize: 16,
+                              fontWeight: 600,
+                              color: '#f0f2f8',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {s.detectedVideo.title}
+                          </div>
+                          {s.detectedVideo.url && (
+                            <div
+                              style={{
+                                fontSize: 13,
+                                color: '#9aa3b2',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {s.detectedVideo.url.replace(/^https?:\/\//, '')}
+                            </div>
+                          )}
+                        </div>
+
+                        {fmts.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {fmts.map((f) => (
+                              <button
+                                key={f.id}
+                                onClick={() => this.setState({ fmt: f.id })}
+                                style={{
+                                  minHeight: 52,
+                                  borderRadius: 14,
+                                  padding: '0 18px',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  color: '#e8eaf0',
+                                  background: s.fmt === f.id ? '#2d2a55' : '#232736',
+                                  border: `1.5px solid ${s.fmt === f.id ? '#7c5cff' : 'transparent'}`,
+                                  boxShadow: s.fmt === f.id ? '0 0 16px rgba(124,92,255,.25)' : 'none',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.15s ease',
+                                }}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  <div
+                                    style={{
+                                      width: 18,
+                                      height: 18,
+                                      borderRadius: 9,
+                                      border: `2px solid ${s.fmt === f.id ? '#7c5cff' : '#4a5068'}`,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                    }}
+                                  >
+                                    {s.fmt === f.id && (
+                                      <div style={{ width: 8, height: 8, borderRadius: 4, background: '#7c5cff' }} />
+                                    )}
+                                  </div>
+                                  <span style={{ fontSize: 15, fontWeight: 600 }}>{f.label}</span>
+                                </div>
+                                <span style={{ fontSize: 13, color: '#9aa3b2' }}>{f.meta}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
+                        <button
+                          onClick={this.startDownload}
+                          style={{
+                            marginTop: 4,
+                            minHeight: 54,
+                            borderRadius: 16,
+                            background: '#7c5cff',
+                            color: '#fff',
+                            fontSize: 16,
+                            fontWeight: 700,
+                            border: 0,
+                            cursor: 'pointer',
+                            boxShadow: '0 4px 16px rgba(124,92,255,.4)',
+                          }}
+                        >
+                          Start Download
+                        </button>
+                      </>
+                    ) : (
+                      <div
                         style={{
-                          minHeight: 64,
-                          borderRadius: 16,
-                          padding: '0 20px',
                           display: 'flex',
-                          justifyContent: 'space-between',
+                          flexDirection: 'column',
                           alignItems: 'center',
-                          color: '#e8eaf0',
-                          background: s.fmt === f.id ? '#2d2a55' : '#272b3b',
-                          boxShadow: `inset 0 0 0 2px ${s.fmt === f.id ? '#7c5cff' : 'transparent'}`,
+                          padding: '18px 12px 10px',
+                          gap: 12,
+                          textAlign: 'center',
                         }}
                       >
-                        <span style={{ fontSize: 16, fontWeight: 600 }}>{f.label}</span>
-                        <span style={{ fontSize: 13, color: '#9aa3b2' }}>{f.meta}</span>
-                      </button>
-                    ))}
-                    <button
-                      onClick={this.startDownload}
-                      style={{
-                        marginTop: 6,
-                        minHeight: 56,
-                        borderRadius: 16,
-                        background: '#7c5cff',
-                        color: '#fff',
-                        fontSize: 17,
-                        fontWeight: 600,
-                      }}
-                    >
-                      Download
-                    </button>
+                        <div
+                          style={{
+                            width: 48,
+                            height: 48,
+                            borderRadius: 16,
+                            background: '#282b3a',
+                            color: '#9aa3b2',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <svg
+                            width="24"
+                            height="24"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <circle cx="12" cy="12" r="10" />
+                            <polygon points="10 8 16 12 10 16 10 8" />
+                          </svg>
+                        </div>
+                        <div style={{ fontSize: 16, fontWeight: 600, color: '#e8eaf0' }}>
+                          No video detected on page
+                        </div>
+                        <div style={{ fontSize: 14, color: '#9aa3b2', maxWidth: 360, lineHeight: 1.4 }}>
+                          Play a video in the browser or search for media to capture downloadable streams automatically.
+                        </div>
+                        {(s.webviewUrl || s.q) && (
+                          <button
+                            onClick={() => {
+                              const target = s.webviewUrl || s.q
+                              if (target) {
+                                this.handleVideoDetected(target)
+                              }
+                            }}
+                            style={{
+                              marginTop: 6,
+                              minHeight: 46,
+                              padding: '0 22px',
+                              borderRadius: 14,
+                              background: '#2e2b4f',
+                              border: '1px solid #7c5cff',
+                              color: '#c5b7ff',
+                              fontSize: 14,
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            Scan current page for video streams
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </aside>
                 </>
               )}
@@ -4587,7 +4806,7 @@ export default class App extends React.Component<{}, AppState> {
 
                   <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
                     <div onScroll={onSc('sw')} style={{ height: '100%', overflowY: 'auto', overflowX: 'hidden', paddingBottom: 24 }}>
-                      <div style={{ position: 'relative', width: 736, margin: '0 auto', height: gridH }}>
+                      <div style={{ position: 'relative', width: 736, maxWidth: '100%', margin: '0 auto', height: gridH }}>
                         {tabView.map((t) => (
                           <div key={t.id} style={t.slotStyle}>
                             <div style={t.pop}>
