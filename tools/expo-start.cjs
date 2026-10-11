@@ -7,6 +7,7 @@
 // and is a bit slower; login with `npx expo login` for a stable subdomain.
 //
 // Extra args are forwarded: `npm start -- --clear`, `npm run start:tunnel`.
+const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { resolveLanIp } = require('./lan-ip.cjs');
@@ -21,7 +22,13 @@ if (!ip && !tunnel) {
   process.exit(1);
 }
 
-const cli = path.join(appRoot, 'node_modules', 'expo', 'bin', 'cli');
+let cli = path.join(appRoot, 'node_modules', 'expo', 'bin', 'cli');
+if (!fs.existsSync(cli)) {
+  const rootCli = path.resolve(__dirname, '..', 'node_modules', 'expo', 'bin', 'cli');
+  if (fs.existsSync(rootCli)) {
+    cli = rootCli;
+  }
+}
 const args = [cli, 'start', ...extra];
 
 // Mirror the port the CLI will actually use so the hint below is never stale.

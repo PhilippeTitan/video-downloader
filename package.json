@@ -4,12 +4,17 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "web"
+    "web",
+    "expo-app"
   ],
   "scripts": {
     "dev": "npm run dev --workspace=web",
     "build": "npm run build --workspace=web",
+    "bundle:web": "npm run build --workspace=web && node tools/inline.cjs && node tools/expo-bundle.cjs",
     "lint": "npm run lint --workspace=web",
-    "preview": "npm run preview --workspace=web"
+    "preview": "npm run preview --workspace=web",
+    "expo": "npm run start --workspace=expo-app",
+    "expo:tunnel": "npm run start:tunnel --workspace=expo-app",
+    "expo:start": "npm run start --workspace=expo-app"
   }
 }
