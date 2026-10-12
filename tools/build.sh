@@ -12,6 +12,11 @@ cd "$ROOT"
 # the platform-specific optional bindings (rolldown's darwin-arm64 native
 # module); npm install reconciles those for the current runner OS.
 npm install --no-audit --no-fund
+# ...and npm (even install) trusts the lock's package map, so the foreign
+# platform binding never appears on a macOS runner — add it explicitly,
+# version-matched to the installed rolldown (vite 8's bundler).
+RVERSION="$(node -p "require('$ROOT/web/node_modules/rolldown/package.json').version")"
+npm install --no-save --no-audit --no-fund "@rolldown/binding-darwin-arm64@$RVERSION"
 npm run build
 node "$ROOT/tools/inline.cjs"
 
