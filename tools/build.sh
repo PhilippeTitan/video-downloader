@@ -8,7 +8,10 @@ export THEOS="${THEOS:-$HOME/theos}"
 
 echo "==> [1/4] web build"
 cd "$ROOT"
-npm ci
+# npm install, not ci: the lockfile (generated on Windows) has no entries for
+# the platform-specific optional bindings (rolldown's darwin-arm64 native
+# module); npm install reconciles those for the current runner OS.
+npm install --no-audit --no-fund
 npm run build
 node "$ROOT/tools/inline.cjs"
 
