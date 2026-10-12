@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export THEOS="${THEOS:-$HOME/theos}"
 
 echo "==> [1/4] web build"
-cd "$ROOT/web"
+cd "$ROOT"
 npm ci
 npm run build
 node "$ROOT/tools/inline.cjs"
