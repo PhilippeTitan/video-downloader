@@ -1,5 +1,6 @@
 import React from 'react'
-import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, onNavState, requestNavigation } from './bridge'
+import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, requestReload, onNavState, requestNavigation, debugLog } from './bridge'
+import type { BrowserPaneRect } from './bridge'
 
 interface FavItem {
   label: string
@@ -168,6 +169,10 @@ interface AppState {
   refreshedToast: boolean
   draggingTabIdx: number | null
   dragTabOffset: number
+  stripW: { fav: number; rec: number }
+  barW: { home: number; dock: number }
+  /** Height of the browse content area — drives the reverse (home) sweep geometry. */
+  mainH: number
 }
 
 const STORAGE_KEY_LIB = 'vd-downloads-v1'
@@ -291,6 +296,42 @@ export default class App extends React.Component<{}, AppState> {
   tabHistories: Record<number, { stack: string[]; index: number }> = {}
   unsubNav: (() => void) | null = null
   browserSlotRef = React.createRef<HTMLDivElement>()
+  favStripRef = React.createRef<HTMLDivElement>()
+  recStripRef = React.createRef<HTMLDivElement>()
+  barWrapRef = React.createRef<HTMLDivElement>()
+  qInputRef = React.createRef<HTMLInputElement>()
+  /** Value the search box must snap back to when it loses focus without a
+   *  search running (browser omnibox behavior): captured on focus, replaced
+   *  by executeSearch when a query commits. */
+  qOrig = ''
+  /** Set by the clear button before its programmatic refocus, so onFocus
+   *  doesn't recapture qOrig from a transient state. */
+  suppressQSnap = false
+
+  measureStrips = () => {
+    const fav = this.favStripRef.current?.clientWidth ?? 0
+    const rec = this.recStripRef.current?.clientWidth ?? 0
+    const host = this.barWrapRef.current?.offsetParent
+    const parentW = host instanceof HTMLElement ? host.clientWidth : 0
+    const parentH = host instanceof HTMLElement ? host.clientHeight : 0
+    const { stripW, barW, mainH } = this.state
+    const nextBarW =
+      parentW > 0
+        ? { home: Math.min(560, parentW - 32), dock: Math.min(492, parentW - 332) }
+        : barW
+    const nextMainH = parentH > 0 ? parentH : mainH
+    if (
+      fav !== stripW.fav ||
+      rec !== stripW.rec ||
+      nextBarW.home !== barW.home ||
+      nextBarW.dock !== barW.dock ||
+      nextMainH !== mainH
+    ) {
+      this.setState({ stripW: { fav, rec }, barW: nextBarW, mainH: nextMainH })
+    }
+  }
+
+  lastPaneKey = ''
 
   syncBrowserPane = () => {
     if (!hasNativeShell()) return
@@ -306,24 +347,64 @@ export default class App extends React.Component<{}, AppState> {
       s.nz ||
       s.adding || s.mp > 0
     )
+    const phase = s.seq?.phase
+    const rdown = phase === 'rdown'
     const isVisible = Boolean(
       s.screen === 'browse' &&
       s.webviewSrc &&
-      (!s.seq || s.seq.phase === 'done') &&
+      (!s.seq ||
+        phase === 'scan' ||
+        phase === 'load' ||
+        phase === 'done' ||
+        // `rdown` keeps the page up while the bar wipes it away top-down;
+        // the pane drops at the rdown -> rup transition (mockup showResults).
+        rdown) &&
       !overlayUp
     )
     if (!el || !isVisible) {
-      requestBrowserPane(null)
+      if (this.lastPaneKey !== '') {
+        this.lastPaneKey = ''
+        requestBrowserPane(null)
+      }
       return
     }
     const rect = el.getBoundingClientRect()
-    requestBrowserPane({
+    const slot = {
       x: Math.round(rect.left),
       y: Math.round(rect.top),
       w: Math.round(rect.width),
       h: Math.round(rect.height),
-      visible: true,
-    })
+    }
+    const pane: BrowserPaneRect = {
+      ...slot,
+      // The page mounts hidden at the final rect during `scan`+`load` (loads
+      // while the bar stretches); the shell stretches it in only at `done`.
+      visible: !s.seq || phase === 'done' || rdown,
+    }
+    // Wipe sync: the UI's clip-path can't touch a native layer above us, so
+    // clip the pane itself to the region below the descending bar's bottom edge.
+    // `frame` keeps the WebView's actual native frame STATIC at the slot —
+    // only the overflow-clipping wrapper follows the bar — so the page never
+    // relayouts (or self-reloads) mid-wipe.
+    if (rdown) {
+      const bar = this.barWrapRef.current?.getBoundingClientRect()
+      if (bar) {
+        const clip = Math.round(bar.bottom - rect.top)
+        if (clip > 0) {
+          pane.frame = slot
+          pane.y = slot.y + clip
+          pane.h = Math.max(0, slot.h - clip)
+        }
+      }
+    }
+    // Only post on actual change — a new message every tick makes the native
+    // wrapper re-render and the loading WebView flicker.
+    const key = `${pane.x},${pane.y},${pane.w},${pane.h},${pane.visible}${
+      pane.frame ? `,f${pane.frame.x},${pane.frame.y},${pane.frame.w},${pane.frame.h}` : ''
+    }`
+    if (key === this.lastPaneKey) return
+    this.lastPaneKey = key
+    requestBrowserPane(pane)
   }
 
   pushTabHistory = (tabId: number, text: string) => {
@@ -341,11 +422,17 @@ export default class App extends React.Component<{}, AppState> {
       this.setState({ screen: 'browse' })
       return
     }
-    if (this.state.webviewSrc || (this.state.seq && this.state.seq.phase !== 'rdown')) {
+    const { seq, webviewSrc } = this.state
+    const ph = seq?.phase
+    const pageUp = seq ? ph === 'load' || ph === 'done' : !!webviewSrc
+    if (pageUp) {
       if (hasNativeShell()) {
         requestGoBack()
       }
-      this.setState({ seq: { key: 'home', text: '', phase: 'rdown' }, sp: 0 })
+      this.setState({
+        seq: seq ? { ...seq, phase: 'rdown' } : { key: 'home', text: '', phase: 'rdown' },
+        sp: 0,
+      })
     }
   }
 
@@ -450,7 +537,7 @@ export default class App extends React.Component<{}, AppState> {
       seq: null,
       sp: 0,
       q: '',
-      tabs: [],
+      tabs: [{ id: 1, text: '', priv: false }],
       sw: false,
       swp: 0,
       swt: 0,
@@ -476,6 +563,9 @@ export default class App extends React.Component<{}, AppState> {
       refreshedToast: false,
       draggingTabIdx: null,
       dragTabOffset: 0,
+      stripW: { fav: 0, rec: 0 },
+      barW: { home: 560, dock: 492 },
+      mainH: 0,
     }
   }
 
@@ -500,30 +590,44 @@ export default class App extends React.Component<{}, AppState> {
         this.setState({ sheet: true })
       } else if (data.type === 'search-query' && data.payload?.query) {
         this.executeSearch(data.payload.query)
+      } else if (data.type === 'pullRefresh') {
+        // Browsing page pulled down at its top — run the shared refresh flow.
+        debugLog('pullRefresh -> reload')
+        this.triggerRefresh()
       } else if (data.type === 'nav' && data.payload?.url) {
         this.setState({ webviewUrl: data.payload.url })
       }
     }
   }
 
+  tabTextPatch = (tabs: TabItem[], ci: number, text: string): TabItem[] =>
+    tabs.length > 0
+      ? tabs.map((tab, idx) => (idx === ci ? { ...tab, text } : tab))
+      : [{ id: Date.now(), text }]
+
   executeSearch = (text: string) => {
     const query = (text || '').trim()
     if (!query) return
+    // Mockup parity: typed searches only start from rest or a settled page —
+    // never while a sequence (incl. the home sweep) is already running.
+    if (this.state.seq && this.state.seq.phase !== 'done') return
+    // The query commits now — a later blur must revert to THIS value, not to
+    // whatever the box held when it was focused.
+    this.qOrig = query
+    debugLog(`executeSearch "${query}" | tabs=${this.state.tabs.length} ci=${this.state.ci} phase=${this.state.seq?.phase ?? 'none'} webviewSrc=${this.state.webviewSrc ? 'yes' : 'no'}`)
 
     const curTab = this.state.tabs[this.state.ci]
     if (curTab) {
       this.pushTabHistory(curTab.id, query)
     }
 
-    const updatedTabs = this.state.tabs.length > 0
-      ? this.state.tabs.map((tab, idx) => idx === this.state.ci ? { ...tab, text: query } : tab)
-      : [{ id: 1, text: query }]
+    const updatedTabs = this.tabTextPatch(this.state.tabs, this.state.ci, query)
 
     const nextHist = [query, ...this.state.hist.filter((h) => h !== query)].slice(0, 8)
     const isAlreadyUp = this.state.seq?.phase === 'done' || (!!this.state.webviewSrc && !this.state.seq)
     const initialPhase = isAlreadyUp ? 'load' : 'fade'
 
-    this.setState({
+    const patch: Record<string, unknown> = {
       screen: 'browse',
       searchFocused: false,
       seq: { key: 'search:' + query, text: query, phase: initialPhase, t0: Date.now() },
@@ -531,7 +635,16 @@ export default class App extends React.Component<{}, AppState> {
       q: query,
       tabs: updatedTabs,
       hist: nextHist,
-    }, () => {
+    }
+    // Re-search from a live page skips `scan`, so resolve the target here —
+    // the scan->load hook only runs on the full fade->scan->load path.
+    if (isAlreadyUp) {
+      const target = resolveWebTarget(query)
+      patch.webviewSrc = target.src
+      patch.webviewUrl = target.url
+    }
+
+    this.setState(patch as any, () => {
       this.saveStorage()
       this.handleVideoDetected(query)
     })
@@ -704,8 +817,20 @@ export default class App extends React.Component<{}, AppState> {
   }
 
   triggerRefresh = () => {
-    if (this.state.isRefreshing) return
+    const canReload = hasNativeShell() && !!this.state.webviewSrc
+    if (this.state.isRefreshing) {
+      // A repeat pull during the spinner window must still reload — the old
+      // early return silently swallowed it (and the page's one-shot pull
+      // latch then blocked every later pull until an unrelated reload).
+      if (canReload) requestReload()
+      return
+    }
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
+    // Native shell: actually reload the browsing WebView — before this, only
+    // the pure-web iframe remounted (via refreshKey below) and the real page
+    // never reloaded. Called by the bar's refresh button AND the page's
+    // pull-to-refresh gesture (relayed as `pullRefresh`).
+    if (canReload) requestReload()
     this.setState({
       isRefreshing: true,
       pullY: 54,
@@ -732,6 +857,7 @@ export default class App extends React.Component<{}, AppState> {
 
   componentDidMount() {
     this.handleResize()
+    this.measureStrips()
     window.addEventListener('resize', this.handleResize)
     window.addEventListener('orientationchange', this.handleResize)
     window.addEventListener('message', this.handleMessage)
@@ -835,11 +961,27 @@ export default class App extends React.Component<{}, AppState> {
           const p = Math.min(1, s.sp + 0.045)
           up.sp = p
           if (p === 1) {
+            // Resolve the Web target at fade->scan (not scan->load) so the
+            // native pane is placed — hidden — at scan start and the page
+            // loads during the bar stretch, not after it.
+            const txt = s.seq.text.trim()
+            const target = resolveWebTarget(txt)
+            up.webviewSrc = target.src
+            up.webviewUrl = target.url
+            if (!s.cpriv) {
+              up.hist = [txt, ...s.hist.filter((h) => h !== txt)].slice(0, 8)
+              setTimeout(this.saveStorage, 100)
+            }
+            const curTab = s.tabs[s.ci]
+            if (curTab) {
+              this.pushTabHistory(curTab.id, txt)
+            }
+            this.handleVideoDetected(txt)
             up.seq = { ...s.seq, phase: 'scan' }
             up.sp = 0
           }
         } else if (s.seq.phase === 'scan') {
-          const p = Math.min(1, s.sp + (s.seq.skip ? 0.08 : 0.045))
+          const p = Math.min(1, s.sp + (s.seq.skip ? 0.04 : 0.025))
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: s.seq.skip ? 'done' : 'load', t0: Date.now() }
@@ -851,50 +993,51 @@ export default class App extends React.Component<{}, AppState> {
           if (p === 1) {
             up.seq = { ...s.seq, phase: 'done' }
             up.sp = 0
-            if (!s.cpriv) {
-              const nextHist = [s.seq.text, ...s.hist.filter((h) => h !== s.seq!.text)].slice(0, 8)
-              up.hist = nextHist
-              setTimeout(this.saveStorage, 100)
-            }
-            // Resolve Webview Source URL
-            const txt = s.seq.text.trim()
-            const target = resolveWebTarget(txt)
-            up.webviewSrc = target.src
-            up.webviewUrl = target.url
-            const curTab = s.tabs[s.ci]
-            if (curTab) {
-              this.pushTabHistory(curTab.id, txt)
-            }
-            this.handleVideoDetected(txt)
           }
         } else if (s.seq.phase === 'done' && s.sp < 1) {
           up.sp = Math.min(1, s.sp + 0.07)
         } else if (s.seq.phase === 'rdown') {
-          const p = Math.min(1, s.sp + 0.05)
+          const p = Math.min(1, s.sp + 0.04)
+          up.sp = p
+          if (p === 1) {
+            up.seq = { ...s.seq, phase: 'rup' }
+            up.sp = 0
+            // Mockup clears the query when the bar finishes its dive; the
+            // native pane drops with the results container (syncBrowserPane).
+            up.q = ''
+            up.webviewSrc = ''
+            up.webviewUrl = ''
+            up.detectedVideo = null
+            // Tab text is kept (mockup parity) — the strip stays on home with
+            // the query in the card; only the history cursor resets.
+            const curTab = s.tabs[s.ci]
+            if (curTab) {
+              const th = this.tabHistories[curTab.id]
+              this.tabHistories[curTab.id] = { stack: th ? th.stack : [], index: -1 }
+            }
+          }
+        } else if (s.seq.phase === 'rup') {
+          const p = Math.min(1, s.sp + 0.045)
+          up.sp = p
+          if (p === 1) {
+            up.seq = { ...s.seq, phase: 'rfade' }
+            up.sp = 0
+          }
+        } else if (s.seq.phase === 'rfade') {
+          const p = Math.min(1, s.sp + 0.08)
           up.sp = p
           if (p === 1) {
             up.seq = null
             up.sp = 0
             up.q = ''
-            up.webviewSrc = ''
-            up.webviewUrl = ''
-            up.detectedVideo = null
-            up.tabs = s.tabs.map((tab, idx) => (idx === s.ci ? { ...tab, text: '' } : tab))
-            const curTab = s.tabs[s.ci]
-            if (curTab) {
-              this.tabHistories[curTab.id] = { stack: [], index: -1 }
-            }
-            if (hasNativeShell()) {
-              requestBrowserPane(null)
-            }
           }
         }
       }
       const idle = (k: string) => !this.dr[k] && Date.now() - (this.act[k] || 0) > 1800
       const favBusy = this.hold || s.adding || s.mp > 0 || s.gp < 1
       if (s.screen === 'browse') {
-        if (idle('fx') && !favBusy && !s.seq) up.fx = s.fx - 0.9
-        if (idle('rx') && !s.seq) up.rx = s.rx + 0.75
+        if (idle('fx') && !favBusy && !s.seq && s.favs.length * 120 > s.stripW.fav) up.fx = s.fx - 0.9
+        if (idle('rx') && !s.seq && s.hist.length * 120 > s.stripW.rec) up.rx = s.rx + 0.75
       }
       if (s.nph) {
         if (s.nph === 'slide') {
@@ -926,7 +1069,7 @@ export default class App extends React.Component<{}, AppState> {
       {
         const ap = (v: number, t: number, u: number, d: number) =>
           t > v ? Math.min(t, v + u) : Math.max(t, v - d)
-        const strip = s.tabs.length > 0 && s.screen === 'browse'
+        const strip = s.tabs.some((t) => !!t.text) && s.screen === 'browse'
         const topT = strip && (!s.seq || s.seq.phase === 'rfade') ? 1 : 0
         const underT = strip && s.seq && s.seq.phase === 'done' ? 1 : 0
         const npa = ap(s.pa, topT, 0.07, 0.14)
@@ -965,7 +1108,7 @@ export default class App extends React.Component<{}, AppState> {
         if (v >= 1) {
           up.caOn = false
           up.cax = 0
-          up.tabs = []
+          up.tabs = [{ id: Date.now(), text: '', priv: false }]
           up.ci = 0
           up.cpriv = false
           this.pos = {}
@@ -1038,8 +1181,10 @@ export default class App extends React.Component<{}, AppState> {
       if (s.hm && s.hmp < 1) up.hmp = Math.min(1, s.hmp + 0.14)
       else if (!s.hm && s.hmp > 0) up.hmp = Math.max(0, s.hmp - 0.14)
       {
-        const hT = (s.screen === 'browse' && !s.webviewSrc && (!s.seq || s.seq.phase === 'rfade')) || (s.seq && s.seq.phase === 'rdown') ? 1 : 0
-        if (s.hb !== hT) up.hb = hT > s.hb ? Math.min(1, s.hb + 0.12) : Math.max(0, s.hb - 0.12)
+        // Mockup: house icon stays through rdown/rup, morphs back to the
+        // hamburger during rfade (hT only flips on home / rfade).
+        const hT = s.screen === 'browse' && !s.webviewSrc && (!s.seq || s.seq.phase === 'rfade') ? 1 : 0
+        if (s.hb !== hT) up.hb = hT > s.hb ? Math.min(1, s.hb + 0.1) : Math.max(0, s.hb - 0.1)
         const pT = s.cpriv ? 1 : 0
         if (s.pv !== pT) up.pv = pT > s.pv ? Math.min(1, s.pv + 0.08) : Math.max(0, s.pv - 0.08)
         if (s.dw && s.dwp < 1) up.dwp = Math.min(1, s.dwp + 0.12)
@@ -1050,7 +1195,16 @@ export default class App extends React.Component<{}, AppState> {
   }
 
   componentDidUpdate(_prevProps: {}, prevState: AppState) {
+    const prevPhase = prevState.seq?.phase ?? 'none'
+    const phase = this.state.seq?.phase ?? 'none'
+    if (prevPhase !== phase) {
+      debugLog(`seq ${prevPhase} -> ${phase} | tabs=${this.state.tabs.length} ci=${this.state.ci} src=${this.state.webviewSrc ? 'yes' : 'no'}`)
+    }
+    if (prevState.tabs.length !== this.state.tabs.length) {
+      debugLog(`tabs ${prevState.tabs.length} -> ${this.state.tabs.length} ci=${this.state.ci}`)
+    }
     this.syncBrowserPane()
+    this.measureStrips()
     if (hasNativeShell() && this.state.webviewSrc && this.state.webviewSrc !== prevState.webviewSrc) {
       requestNavigation(this.state.webviewSrc)
     }
@@ -1414,6 +1568,8 @@ export default class App extends React.Component<{}, AppState> {
 
     const fw = Math.max(120, s.favs.length * 120)
     const rw = Math.max(120, rawRecents.length * 120)
+    const favOver = fw > s.stripW.fav
+    const recOver = rw > s.stripW.rec
     const norm = (v: number, w: number) => (w > 0 ? Math.round((((v % w) + w) % w) - w) : 0)
 
     const mk = (key: 'fx' | 'rx') => ({
@@ -1467,23 +1623,43 @@ export default class App extends React.Component<{}, AppState> {
       sq && sq.key === key ? (ph === 'fade' ? 1 - s.sp : ph === 'rfade' ? s.sp : 0) : 1
     const start = (key: string, text: string, row: string) => () => {
       if (s.seq || (this.mv[row] || 0) > 6) return
-      this.setState({ seq: { key, text, phase: 'fade' }, sp: 0, q: text })
+      debugLog(`start "${text}" | tabs=${s.tabs.length} ci=${s.ci}`)
+      this.setState({ seq: { key, text, phase: 'fade' }, sp: 0, q: text, tabs: this.tabTextPatch(s.tabs, s.ci, text) })
     }
     const eio = (x: number) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2)
+    // Reverse-sweep geometry (mockup barY, scaled to our measured content
+    // height; mockup main is 1180 tall so its 512/520 become these):
+    //   rdown: dock (-dockDelta) -> home (0) -> dive below it (+diveEnd)
+    //   rup:   dive end -> home;  rfade: parked at home
+    const mainH = s.mainH || 1180
+    const dockDelta = mainH / 2 - 78
+    const diveEnd = mainH / 2 - 70
+    const rY =
+      ph === 'rdown'
+        ? -dockDelta + (dockDelta + diveEnd) * eio(s.sp)
+        : ph === 'rup'
+          ? diveEnd * (1 - eio(s.sp))
+          : ph === 'rfade'
+            ? 0
+            : null
     const barUpP =
       ph === 'scan'
         ? eio(s.sp)
         : ph === 'load' || ph === 'done'
           ? 1
-          : ph === 'rdown'
-            ? Math.max(0, 1 - eio(s.sp))
+          : rY !== null
+            ? Math.max(0, Math.min(1, -rY / dockDelta))
             : (s.webviewSrc && ph !== 'rfade')
               ? 1
               : 0
+    const barWp = barUpP
+    // Below-home overshoot rides on top of the top/left formula (0 in all
+    // forward phases — the banned positioning stays untouched).
+    const barShiftY = rY !== null && rY > 0 ? Math.round(rY) : 0
     const clipBv =
       ph === 'scan'
         ? Math.max(0, Math.round(512 * barUpP - 22))
-        : ph === 'load' || ph === 'done'
+        : ph === 'load' || ph === 'done' || ph === 'rdown' || ph === 'rup'
           ? 9999
           : 0
 
@@ -1512,21 +1688,21 @@ export default class App extends React.Component<{}, AppState> {
     const laser =
       ph === 'fade'
         ? s.sp
-        : ph === 'scan' || ph === 'load'
+        : ph === 'scan' || ph === 'load' || ph === 'rdown' || ph === 'rup'
           ? 1
-          : ph === 'done'
+          : ph === 'done' || ph === 'rfade'
             ? 1 - s.sp
-            : ph === 'rdown'
-              ? Math.max(0, 1 - s.sp * 2)
-              : 0
+            : 0
     const runner = ph === 'load' || ph === 'done'
     const runOp = (ph === 'load' ? 1 : ph === 'done' ? 1 - s.sp : 0) * (sq && sq.skip ? 0 : 1)
     const loading = ph === 'load'
     const status = sq ? 'Looking up ' + sq.text.slice(0, 40) + '…' : ''
+    const isReverse = ph === 'rdown' || ph === 'rup' || ph === 'rfade'
     const isBarUp = Boolean(
-      barUpP > 0.05 ||
-      (sq && (ph === 'scan' || ph === 'load' || ph === 'done')) ||
-      Boolean(s.webviewSrc && (!sq || ph !== 'rdown'))
+      !isReverse &&
+        (barUpP > 0.05 ||
+          (sq && (ph === 'scan' || ph === 'load' || ph === 'done')) ||
+          s.webviewSrc),
     )
 
     const activeDomain = getDisplayDomain(s.webviewUrl || (sq ? sq.text : s.q))
@@ -1540,33 +1716,45 @@ export default class App extends React.Component<{}, AppState> {
       qText = sq.text.slice(0, Math.ceil(s.sp * sq.text.length))
     }
     const qAlpha = (ph === 'fade' ? 0.3 + 0.7 * s.sp : 1) * (1 - s.tsp)
+    // Clear (X) button: only when the box holds text — focused shows s.q,
+    // unfocused home shows the query; on a page (bar up, unfocused) it's
+    // hidden because the refresh button lives there instead.
+    const xOn = Boolean(s.searchFocused ? s.q : (isBarUp ? '' : s.q))
     const isHomeNow = s.screen === 'browse' && !s.webviewSrc && (!s.seq || s.seq.phase === 'rfade')
     const resTop = s.tabs.length ? 164 : 140
-    const resClip = ph === 'rdown' ? Math.max(0, Math.round(512 * s.sp)) : 0
-    const chevOp =
-      ph === 'done'
-        ? s.sp
-        : ph === 'rdown'
-          ? Math.max(0, 1 - s.sp * 2)
-          : (ph === 'fade' || ph === 'scan' || ph === 'load' || ph === 'rup' || ph === 'rfade')
-            ? 0
-            : (!isHomeNow && s.screen === 'browse')
-              ? 1
-              : 0
-    const chevPe: React.CSSProperties['pointerEvents'] = chevOp > 0.4 ? 'auto' : 'none'
+    // Mockup: inset(resClip) follows the bar's bottom edge as it sweeps down
+    // over the results (560 + barY + 60 - resTop with mainH 1180).
+    const resClip =
+      ph === 'rdown' && rY !== null ? Math.max(0, Math.round(mainH / 2 + 30 + rY - resTop)) : 0
 
     const curTab = s.tabs[s.ci]
     const curHist = curTab ? this.tabHistories[curTab.id] : undefined
-    const canGoForward = Boolean((curHist && curHist.index < curHist.stack.length - 1) || (hasNativeShell() && s.canGoForwardNative))
-    const canGoBack = Boolean(s.screen !== 'browse' || !isHomeNow || (curHist && curHist.index > 0) || (hasNativeShell() && s.canGoBackNative))
+    const canGoForward = Boolean(
+      (curHist && curHist.index < curHist.stack.length - 1) ||
+        (!isHomeNow && hasNativeShell() && s.canGoForwardNative),
+    )
+    const canGoBack = Boolean(
+      s.screen !== 'browse' || !isHomeNow || (curHist && curHist.index > 0),
+    )
 
     const showResults = Boolean(
       s.screen === 'browse' &&
       Boolean(s.webviewSrc) &&
-      (!s.seq || ph === 'done' || (ph === 'rdown' && (1 - s.sp) > 0.01))
+      (!s.seq ||
+        ph === 'load' ||
+        ph === 'done' ||
+        // Native shell only: mount the slot during `scan` too so the hidden
+        // pane can be placed while the bar stretches. Pure web keeps the
+        // mockup timing (results appear at `load`).
+        (ph === 'scan' && hasNativeShell()) ||
+        (ph === 'rdown' && (1 - s.sp) > 0.01))
     )
-    const resOp = (ph === 'rdown' ? 1 - s.sp : s.sp) * (1 - s.tsp)
-    const resY = ph === 'rdown' ? 0 : Math.round((1 - s.sp) * 16)
+    const resOp = (ph === 'rdown' ? 1 : s.sp) * (1 - s.tsp)
+    // Under the native shell the results container is a transparent placeholder
+    // (real content is the native WebView above it). Skip its slide-in — the
+    // moving transform drags browserSlotRef's measured rect 1px/tick and makes
+    // the native pane jitter. Keep it for the pure-web demo.
+    const resY = ph === 'rdown' || hasNativeShell() ? 0 : Math.round((1 - s.sp) * 16)
     const resTitle = sq ? sq.text : s.q || 'Web Search'
 
     const pageUp = !!sq && (ph === 'load' || ph === 'done')
@@ -1624,6 +1812,13 @@ export default class App extends React.Component<{}, AppState> {
           ...patch,
           ...restore(targetText),
         } as any)
+      } else if (pageUp) {
+        // Switching to an empty tab from a page plays the home sweep.
+        this.setState({
+          ...patch,
+          seq: { ...sq!, phase: 'rdown' },
+          sp: 0,
+        } as any)
       } else {
         this.setState({
           ...patch,
@@ -1678,7 +1873,8 @@ export default class App extends React.Component<{}, AppState> {
       if (curTab && allTabs.length > 1) {
         dropTabById(curTab.id)
       } else if (pageUp && s.screen === 'browse') {
-        this.setState({ seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null })
+        // Single tab: closing it means going home — play the sweep.
+        this.setState({ seq: { ...sq!, phase: 'rdown' }, sp: 0 })
       }
     }
 
@@ -1718,6 +1914,7 @@ export default class App extends React.Component<{}, AppState> {
       const curTextVal = (pageUp && sq ? sq.text : '') || s.q || allTabs[activeIndex]?.text || ''
       const updated = allTabs.map((t, idx) => (idx === activeIndex ? { ...t, text: curTextVal, priv: s.cpriv } : t))
       const newTabItem: TabItem = { id: Date.now(), text: '', priv: s.swm }
+      debugLog(`addFromSw | tabs=${allTabs.length} ci=${activeIndex}`)
       const nt = [...updated, newTabItem]
       const base = {
         tabs: nt,
@@ -1822,12 +2019,23 @@ export default class App extends React.Component<{}, AppState> {
         this.held = false
         return
       }
-      if (allTabs.length >= 10) return
+      if (s.nph || allTabs.length >= 10) return
       this.sfGo = true
-      doNewTab(pr)
+      debugLog(`newTab() priv=${pr} | tabs=${allTabs.length}`)
+      // Mockup: the + morphs into a sliding pill; from a page the home sweep
+      // runs behind it and doNewTab lands when the pill arrives.
+      this.afterNew = () => doNewTab(pr)
+      this.setState({
+        nph: 'slide' as const,
+        npp: 0,
+        ...(pageUp && s.screen === 'browse'
+          ? { seq: { ...sq!, phase: 'rdown' as const }, sp: 0 }
+          : {}),
+      } as any)
     }
 
     const doNewTab = (pr: boolean) => {
+      debugLog(`doNewTab priv=${pr} | tabs=${allTabs.length} ci=${activeIndex}`)
       const curTextVal = (pageUp && sq ? sq.text : '') || s.q || allTabs[activeIndex]?.text || ''
       const updated = allTabs.map((t, idx) => (idx === activeIndex ? { ...t, text: curTextVal, priv: s.cpriv } : t))
       const newTabItem: TabItem = { id: Date.now(), text: '', priv: !!pr }
@@ -2226,21 +2434,26 @@ export default class App extends React.Component<{}, AppState> {
                               {favView.length > 0 && (
                                 <div
                                   {...fm}
+                                  ref={this.favStripRef}
                                   style={{
                                     touchAction: 'pan-y',
-                                    cursor: 'grab',
+                                    cursor: favOver ? 'grab' : 'default',
                                     flex: 1,
                                     minWidth: 0,
                                     overflow: 'hidden',
-                                    maskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
-                                    WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
+                                    maskImage: favOver
+                                      ? 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)'
+                                      : 'none',
+                                    WebkitMaskImage: favOver
+                                      ? 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)'
+                                      : 'none',
                                   }}
                                 >
                                   <div
                                     style={{
                                       display: 'flex',
                                       width: 'max-content',
-                                      transform: `translateX(${norm(s.fx, fw)}px)`,
+                                      transform: `translateX(${favOver ? norm(s.fx, fw) : 0}px)`,
                                     }}
                                   >
                                     {favView.map((f, idx) => (
@@ -2282,6 +2495,7 @@ export default class App extends React.Component<{}, AppState> {
                                         <span style={{ fontSize: 13 }}>{f.label}</span>
                                       </button>
                                     ))}
+                                    {favOver && (
                                     <div aria-hidden="true" style={{ display: 'flex' }}>
                                       {favView.map((g, idx) => (
                                         <button
@@ -2323,6 +2537,7 @@ export default class App extends React.Component<{}, AppState> {
                                         </button>
                                       ))}
                                     </div>
+                                    )}
                                   </div>
                                 </div>
                               )}
@@ -2392,19 +2607,24 @@ export default class App extends React.Component<{}, AppState> {
                               </div>
                               <div
                                 {...rm}
+                                ref={this.recStripRef}
                                 style={{
                                   touchAction: 'pan-y',
-                                  cursor: 'grab',
+                                  cursor: recOver ? 'grab' : 'default',
                                   overflow: 'hidden',
-                                  maskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
-                                  WebkitMaskImage: 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)',
+                                  maskImage: recOver
+                                    ? 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)'
+                                    : 'none',
+                                  WebkitMaskImage: recOver
+                                    ? 'linear-gradient(90deg,transparent,#000 14%,#000 86%,transparent)'
+                                    : 'none',
                                 }}
                               >
                                 <div
                                   style={{
                                     display: 'flex',
                                     width: 'max-content',
-                                    transform: `translateX(${norm(s.rx, rw)}px)`,
+                                    transform: `translateX(${recOver ? norm(s.rx, rw) : 0}px)`,
                                   }}
                                 >
                                   {rawRecents.map((t, idx) => (
@@ -2455,6 +2675,7 @@ export default class App extends React.Component<{}, AppState> {
                                       </span>
                                     </button>
                                   ))}
+                                  {recOver && (
                                   <div aria-hidden="true" style={{ display: 'flex' }}>
                                     {rawRecents.map((q, idx) => (
                                       <button
@@ -2505,6 +2726,7 @@ export default class App extends React.Component<{}, AppState> {
                                       </button>
                                     ))}
                                   </div>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -2553,11 +2775,14 @@ export default class App extends React.Component<{}, AppState> {
                     </div>
 
                     <div
+                      ref={this.barWrapRef}
                       style={{
                         position: 'absolute',
                         left: `${Math.round(180 * barUpP)}px`,
                         right: `${Math.round(152 * barUpP)}px`,
                         top: `calc(${(1 - barUpP) * 50}% + ${Math.round(-30 + 78 * barUpP)}px)`,
+                        // Below-home overshoot of the reverse sweep (0 everywhere else).
+                        transform: barShiftY ? `translateY(${barShiftY}px)` : undefined,
                         display: 'flex',
                         justifyContent: 'center',
                         zIndex: 35,
@@ -2569,7 +2794,7 @@ export default class App extends React.Component<{}, AppState> {
                           position: 'relative',
                           width: '100%',
                           minWidth: 0,
-                          maxWidth: barUpP > 0.5 ? 492 : 'min(560px, calc(100% - 32px))',
+                          maxWidth: Math.round(s.barW.home + (s.barW.dock - s.barW.home) * barWp),
                         }}
                       >
                         <div
@@ -2699,16 +2924,31 @@ export default class App extends React.Component<{}, AppState> {
                         </svg>
                         <input
                           type="text"
+                          ref={this.qInputRef}
                           aria-label="Search or enter website name"
                           placeholder="Search or enter website name"
                           value={qText}
                           onFocus={() => {
+                            // Capture the pre-edit value once per focus so a
+                            // blur without a search can restore it (Chrome
+                            // omnibox behavior). The clear button suppresses
+                            // its programmatic refocus capture.
+                            if (!this.suppressQSnap) this.qOrig = s.q
+                            this.suppressQSnap = false
                             this.setState({
                               searchFocused: true,
                               q: isBarUp ? (s.webviewUrl || s.q || '') : s.q,
                             })
                           }}
-                          onBlur={() => this.setState({ searchFocused: false })}
+                          onBlur={() => {
+                            this.suppressQSnap = false
+                            this.setState({
+                              searchFocused: false,
+                              // Browser omnibox behavior: an edit that never
+                              // committed snaps back to the original text.
+                              q: this.state.q !== this.qOrig ? this.qOrig : this.state.q,
+                            })
+                          }}
                           onChange={(e) => this.setState({ q: e.target.value })}
                           onKeyDown={(e) => {
                             if (e.key !== 'Enter') return
@@ -2728,22 +2968,29 @@ export default class App extends React.Component<{}, AppState> {
                             color: `rgba(232,234,240,${qAlpha})`,
                             fontSize: 17,
                             fontFamily: 'inherit',
-                            padding: (s.searchFocused ? s.q : (isBarUp ? '' : s.q)) ? '0 52px 0 58px' : '0 24px 0 58px',
+                            padding: xOn ? '0 58px 0 58px' : '0 24px 0 58px',
                             boxShadow: '0 8px 28px rgba(0,0,0,.35)',
                           }}
                         />
-                        {(s.searchFocused ? s.q : (isBarUp ? '' : s.q)) && (
+                        {xOn && (
                           <button
                             type="button"
                             aria-label="Clear search"
-                            onClick={() => this.setState({ q: '' })}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              // Keep the keyboard up: clear the text, force
+                              // focus and let the user type straight away.
+                              this.suppressQSnap = true
+                              this.setState({ q: '', searchFocused: true })
+                              this.qInputRef.current?.focus()
+                            }}
                             style={{
                               position: 'absolute',
-                              right: 20,
-                              top: 20,
-                              width: 20,
-                              height: 20,
-                              borderRadius: 10,
+                              right: 18,
+                              top: 16,
+                              width: 28,
+                              height: 28,
+                              borderRadius: 14,
                               background: '#2d3142',
                               color: '#9aa3b2',
                               display: 'flex',
@@ -2751,9 +2998,10 @@ export default class App extends React.Component<{}, AppState> {
                               justifyContent: 'center',
                               cursor: 'pointer',
                               border: 0,
+                              padding: 0,
                             }}
                           >
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4">
                               <path d="M18 6L6 18M6 6l12 12" />
                             </svg>
                           </button>
@@ -2801,36 +3049,46 @@ export default class App extends React.Component<{}, AppState> {
                           flexDirection: 'column',
                           background: hasNativeShell() ? 'transparent' : '#0e0f14',
                           zIndex: 15,
-                          opacity: resOp,
+                          // During `scan` the slot exists only to be measured
+                          // for the hidden native pane — keep it invisible and
+                          // touch-through until `load`.
+                          opacity: hasNativeShell() && ph === 'scan' ? 0 : resOp,
+                          pointerEvents: hasNativeShell() && ph === 'scan' ? 'none' : 'auto',
                           transform: `translateY(${resY}px)`,
                           clipPath: `inset(${resClip}px 0 0 0)`,
                           WebkitClipPath: `inset(${resClip}px 0 0 0)`,
                         }}
                       >
-                        {/* Pull to refresh touch / gesture zone */}
-                        <div
-                          onPointerDown={(e) => {
-                            this.handlePullStart(e.clientY)
-                            try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
-                          }}
-                          onPointerMove={(e) => this.handlePullMove(e.clientY)}
-                          onPointerUp={this.handlePullEnd}
-                          onPointerCancel={this.handlePullEnd}
-                          style={{
-                            height: 20,
-                            width: '100%',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'grab',
-                            touchAction: 'none',
-                            zIndex: 35,
-                            background: 'linear-gradient(180deg, rgba(31,34,48,0.6) 0%, rgba(31,34,48,0) 100%)',
-                          }}
-                          title="Pull down to refresh"
-                        >
-                          <div style={{ width: 36, height: 3.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }} />
-                        </div>
+                        {/* Pure-web demo only: the iframe swallows pointer
+                            events, so this strip is the demo's pull entry
+                            point. Hidden under the native shell — there the
+                            page itself detects the pull (PULL_JS) and the
+                            browser runs full-bleed to the container top. */}
+                        {!hasNativeShell() && (
+                          <div
+                            onPointerDown={(e) => {
+                              this.handlePullStart(e.clientY)
+                              try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                            }}
+                            onPointerMove={(e) => this.handlePullMove(e.clientY)}
+                            onPointerUp={this.handlePullEnd}
+                            onPointerCancel={this.handlePullEnd}
+                            style={{
+                              height: 20,
+                              width: '100%',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'grab',
+                              touchAction: 'none',
+                              zIndex: 35,
+                              background: 'linear-gradient(180deg, rgba(31,34,48,0.6) 0%, rgba(31,34,48,0) 100%)',
+                            }}
+                            title="Pull down to refresh"
+                          >
+                            <div style={{ width: 36, height: 3.5, borderRadius: 2, background: 'rgba(255,255,255,0.22)' }} />
+                          </div>
+                        )}
 
                         {/* Live Browser Surface */}
                         <div
@@ -4042,10 +4300,17 @@ export default class App extends React.Component<{}, AppState> {
                         this.setState({ screen: 'browse' })
                         return
                       }
+                      // Mockup homeTap: only load/done start the sweep —
+                      // taps mid-sweep (or mid-search) are ignored.
+                      const phx = sq?.phase
+                      if (!(sq ? phx === 'load' || phx === 'done' : !!s.webviewSrc)) return
                       if (hasNativeShell()) {
                         requestGoBack()
                       }
-                      this.setState({ seq: { key: 'home', text: '', phase: 'rdown' }, sp: 0 })
+                      this.setState({
+                        seq: sq ? { ...sq, phase: 'rdown' } : { key: 'home', text: '', phase: 'rdown' },
+                        sp: 0,
+                      })
                     }}
                     style={{
                       position: 'absolute',
@@ -4086,10 +4351,6 @@ export default class App extends React.Component<{}, AppState> {
                       zIndex: 40,
                       display: 'flex',
                       gap: 2,
-                      opacity: chevOp,
-                      pointerEvents: chevPe,
-                      transform: `translateX(${Math.round((1 - chevOp) * -16)}px)`,
-                      transition: 'opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
                     }}
                   >
                     <button
@@ -4100,9 +4361,13 @@ export default class App extends React.Component<{}, AppState> {
                           this.setState({ screen: 'browse' })
                           return
                         }
+                        // Mockup goBrowse: only load/done act mid-sequence.
+                        const phx = sq?.phase
+                        const pageActive = sq ? phx === 'load' || phx === 'done' : !!s.webviewSrc
+                        if (sq && !pageActive) return
                         const curTab = s.tabs[s.ci]
                         const hist = curTab ? this.tabHistories[curTab.id] : undefined
-                        if (hist && hist.index > 0) {
+                        if (pageActive && hist && hist.index > 0) {
                           // Navigate back in this tab's history
                           hist.index -= 1
                           const prevText = hist.stack[hist.index]
@@ -4123,10 +4388,14 @@ export default class App extends React.Component<{}, AppState> {
                         }
 
                         // Otherwise at beginning of tab's history: animate back to Home like the mockup
+                        if (!pageActive) return
                         if (hasNativeShell()) {
                           requestGoBack()
                         }
-                        this.setState({ seq: { key: 'home', text: '', phase: 'rdown' }, sp: 0 })
+                        this.setState({
+                          seq: sq ? { ...sq, phase: 'rdown' } : { key: 'home', text: '', phase: 'rdown' },
+                          sp: 0,
+                        })
                       }}
                       style={{
                         display: 'flex',
@@ -4135,11 +4404,10 @@ export default class App extends React.Component<{}, AppState> {
                         width: 40,
                         height: 60,
                         background: 'none',
-                        color: '#e8eaf0',
-                        filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
-                        opacity: canGoBack ? 1 : 0.32,
+                        color: canGoBack ? '#e8eaf0' : '#565d70',
+                        filter: canGoBack ? 'drop-shadow(0 2px 6px rgba(0,0,0,.8))' : 'none',
                         cursor: canGoBack ? 'pointer' : 'default',
-                        transition: 'transform 0.12s ease',
+                        transition: 'transform 0.12s ease, color 0.15s ease',
                       }}
                       onMouseDown={(e) => { e.currentTarget.style.transform = 'scale(0.92)' }}
                       onMouseUp={(e) => { e.currentTarget.style.transform = 'scale(1)' }}
@@ -4158,6 +4426,8 @@ export default class App extends React.Component<{}, AppState> {
                           this.setState({ screen: 'browse' })
                           return
                         }
+                        const phx = sq?.phase
+                        if (sq && phx !== 'load' && phx !== 'done') return
                         const curTab = s.tabs[s.ci]
                         const hist = curTab ? this.tabHistories[curTab.id] : undefined
                         if (hist && hist.index < hist.stack.length - 1) {
@@ -4187,11 +4457,10 @@ export default class App extends React.Component<{}, AppState> {
                         width: 40,
                         height: 60,
                         background: 'none',
-                        color: '#e8eaf0',
-                        filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
-                        opacity: canGoForward ? 1 : 0.32,
+                        color: canGoForward ? '#e8eaf0' : '#565d70',
+                        filter: canGoForward ? 'drop-shadow(0 2px 6px rgba(0,0,0,.8))' : 'none',
                         cursor: canGoForward ? 'pointer' : 'default',
-                        transition: 'transform 0.12s ease, opacity 0.15s ease',
+                        transition: 'transform 0.12s ease, color 0.15s ease',
                       }}
                       onMouseDown={(e) => { if (canGoForward) e.currentTarget.style.transform = 'scale(0.92)' }}
                       onMouseUp={(e) => { if (canGoForward) e.currentTarget.style.transform = 'scale(1)' }}
@@ -4241,7 +4510,7 @@ export default class App extends React.Component<{}, AppState> {
                         alignItems: 'center',
                         justifyContent: 'center',
                         opacity:
-                          (s.tabs.length + 1 >= 10 ? 0.4 : 1) *
+                          (allTabs.length >= 10 ? 0.4 : 1) *
                           (s.nph === 'slide' ? Math.max(0, Math.min(1, (s.npp - 0.55) / 0.4)) : 1),
                         filter: 'drop-shadow(0 2px 6px rgba(0,0,0,.8))',
                       }}
@@ -4312,7 +4581,7 @@ export default class App extends React.Component<{}, AppState> {
                           fontWeight: 700,
                         }}
                       >
-                        {s.tabs.length + 1}
+                        {allTabs.length}
                       </span>
                     </button>
                   </div>
@@ -4366,7 +4635,8 @@ export default class App extends React.Component<{}, AppState> {
                             key={idx}
                             onClick={() => {
                               if (s.seq) return
-                              this.setState({ hm: false, seq: { key: 'hist:' + t, text: t, phase: 'fade' }, sp: 0, q: t })
+                              debugLog(`hist-open "${t}" | tabs=${s.tabs.length} ci=${s.ci}`)
+                              this.setState({ hm: false, seq: { key: 'hist:' + t, text: t, phase: 'fade' }, sp: 0, q: t, tabs: this.tabTextPatch(s.tabs, s.ci, t) })
                             }}
                             style={{
                               minHeight: 52,

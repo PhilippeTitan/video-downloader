@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, StyleSheet, View } from 'react-native';
+import { Easing, Animated, StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { WebViewMessageEvent, WebViewNavigation } from 'react-native-webview';
 import { WEB_HTML } from './webBundle';
@@ -40,6 +40,10 @@ interface PaneRect {
   h: number;
   /** false = placed but invisible (page loads hidden); true = revealed. */
   visible?: boolean;
+  /** Full slot rect while x/y/w/h are clipped to the wipe region: the
+   *  WebView's native frame stays STATIC here and the wrapper clips it, so
+   *  the page never resizes (no viewport relayout / mid-wipe reloads). */
+  frame?: { x: number; y: number; w: number; h: number };
 }
 
 /** Injected into every browsing page: sniff <video> srcs and .m3u8 traffic. */
@@ -106,6 +110,66 @@ const SNIFFER_JS = `
 true;
 `;
 
+/** Pull-to-refresh inside the browsing page: the UI's own pull handlers live
+ *  under the native pane and never see these touches, so the page itself
+ *  detects an overscroll at the top and reports it. The UI then runs its
+ *  normal refresh flow (spinner + `reload` action).
+ *  Injected BEFORE content loads: with the regular injection there's a dead
+ *  window after every reload (page loads slowly, listeners not attached yet,
+ *  pulls silently do nothing). */
+const PULL_JS = `
+(function () {
+  if (window.__vdPull) return;
+  window.__vdPull = true;
+  var startY = 0;
+  var startX = 0;
+  var startT = 0;
+  var active = false;
+  var fired = false;
+  function atTop() {
+    var y = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0;
+    return y <= 3;
+  }
+  function post() {
+    try {
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        source: 'vd-browser', type: 'pull-refresh',
+      }));
+    } catch (e) {}
+  }
+  document.addEventListener('touchstart', function (e) {
+    fired = false;
+    if (!atTop()) { active = false; return; }
+    active = true;
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    startT = Date.now();
+  }, { passive: true });
+  document.addEventListener('touchmove', function (e) {
+    if (!active || fired) return;
+    var dy = e.touches[0].clientY - startY;
+    var dx = Math.abs(e.touches[0].clientX - startX);
+    if (dy <= 0 || dx * 1.2 > dy) return;
+    // iOS reports negative scrollY while rubber-banding — real content
+    // overscroll is the strongest signal when the page exposes it.
+    var over = -(window.scrollY || 0);
+    var dt = Date.now() - startT;
+    var flick = dy > 28 && dt < 320;
+    var far = dy > 50;
+    if (flick || far || over > 24) {
+      fired = true;
+      active = false;
+      post();
+    }
+  }, { passive: true });
+  // Re-arm at gesture end: if the UI swallowed the trigger (spinner window),
+  // the next pull must still work instead of latching dead until a reload.
+  document.addEventListener('touchend', function () { active = false; fired = false; }, { passive: true });
+  document.addEventListener('touchcancel', function () { active = false; fired = false; }, { passive: true });
+})();
+true;
+`;
+
 export default function App() {
   const uiRef = useRef<WebView>(null);
   const browserRef = useRef<WebView>(null);
@@ -115,16 +179,21 @@ export default function App() {
   const [tabs, setTabs] = useState<ShellTab[]>([{ id: 'tab-1', url: '', title: 'Start' }]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [pane, setPane] = useState<PaneRect | null>(null);
+  // Last non-null slot rect — when the UI hides the pane (home) we keep
+  // fading OUT AT the slot position instead of jumping to full screen.
+  const lastRectRef = useRef<PaneRect | null>(null);
+  if (pane) lastRectRef.current = pane;
 
   // The browser is invisible until the UI reveals it inside its slot
-  // (fade + 16px slide, matching the design's `done` phase), and fades out
-  // again on the return sweep.
+  // (slow stretch from the top edge, matching the design's `done` phase),
+  // and fades out again on the return sweep.
   const paneVisible = !!pane?.visible;
   const reveal = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(reveal, {
       toValue: paneVisible ? 1 : 0,
-      duration: paneVisible ? 350 : 220,
+      duration: paneVisible ? 420 : 220,
+      easing: paneVisible ? Easing.out(Easing.cubic) : Easing.in(Easing.quad),
       useNativeDriver: true,
     }).start();
   }, [paneVisible, reveal]);
@@ -201,6 +270,11 @@ export default function App() {
             title: msg.payload.title,
             tabId: tabs[activeIndex]?.id,
           });
+        } else if (msg.source === 'vd-browser' && msg.type === 'pull-refresh') {
+          // Overscroll-at-top inside the browsing page -> let the UI run its
+          // refresh flow (spinner + requestReload), single reload path.
+          console.log('[vd] pull-refresh | tabs:', tabs.length, 'active:', activeIndex);
+          relayToUi('pullRefresh', {});
         }
       } catch {
         /* non-envelope message from page */
@@ -218,10 +292,16 @@ export default function App() {
         return;
       }
       switch (msg.type) {
+        case 'log': {
+          const p = msg.payload as { msg?: string } | undefined;
+          console.log('[vd-web]', p?.msg ?? '');
+          break;
+        }
         case 'navigate': {
           const payload = msg.payload as { url?: string } | undefined;
           const url = payload?.url;
           if (!url || !activeTab) break;
+          console.log('[vd] navigate', url, '| tabs:', tabs.length, 'active:', activeIndex);
           const hist = historiesRef.current[activeTab.id];
           if (hist) {
             historiesRef.current[activeTab.id] = {
@@ -241,6 +321,7 @@ export default function App() {
             | { tabs?: ShellTab[]; activeIndex?: number }
             | undefined;
           if (Array.isArray(payload?.tabs) && payload.tabs.length > 0) {
+            console.log('[vd] syncTabs', payload.tabs.length, 'active:', payload.activeIndex, payload.tabs.map((t) => t.title || t.url || '-').join(' | '));
             // Preserve per-tab histories; adopt web's ordering + urls.
             setTabs(payload.tabs);
             const nextActive = Math.min(payload.activeIndex ?? 0, payload.tabs.length - 1);
@@ -251,11 +332,13 @@ export default function App() {
         case 'switchTab': {
           const payload = msg.payload as { index?: number } | undefined;
           if (typeof payload?.index === 'number') {
+            console.log('[vd] switchTab ->', payload.index);
             setActiveIndex(Math.max(0, Math.min(payload.index, tabs.length - 1)));
           }
           break;
         }
         case 'newTab': {
+          console.log('[vd] newTab | was:', tabs.length, tabs.map((t) => t.title || t.url || '-').join(' | '));
           setTabs((prev) =>
             prev.length >= 10
               ? prev
@@ -267,6 +350,7 @@ export default function App() {
         case 'closeTab': {
           const payload = msg.payload as { index?: number } | undefined;
           if (typeof payload?.index === 'number' && tabs.length > 1) {
+            console.log('[vd] closeTab', payload.index, '| was:', tabs.length);
             const next = tabs.filter((_, i) => i !== payload.index);
             setTabs(next);
             setActiveIndex((i) => Math.max(0, Math.min(i >= payload.index! ? i - 1 : i, next.length - 1)));
@@ -274,6 +358,7 @@ export default function App() {
           break;
         }
         case 'reload': {
+          console.log('[vd] reload', activeTab?.url ?? '');
           browserRef.current?.reload();
           break;
         }
@@ -308,7 +393,25 @@ export default function App() {
           break;
         }
         case 'browserPane': {
-          setPane((msg.payload as PaneRect | undefined) ?? null);
+          const next = (msg.payload as PaneRect | undefined) ?? null;
+          setPane((prev) => {
+            if (prev === null && next === null) return prev;
+            if (prev !== null && next !== null &&
+                prev.x === next.x && prev.y === next.y &&
+                prev.w === next.w && prev.h === next.h &&
+                !!prev.visible === !!next.visible &&
+                (!!prev.frame === !!next.frame) &&
+                (!prev.frame || !next.frame ||
+                  (prev.frame.x === next.frame.x && prev.frame.y === next.frame.y &&
+                   prev.frame.w === next.frame.w && prev.frame.h === next.frame.h))) {
+              return prev;
+            }
+            console.log('[vd] pane', next
+              ? `${next.x},${next.y} ${next.w}x${next.h} vis=${!!next.visible}` +
+                (next.frame ? ` frame=${next.frame.w}x${next.frame.h}@${next.frame.x},${next.frame.y}` : '')
+              : 'hidden');
+            return next;
+          });
           break;
         }
         default:
@@ -345,35 +448,53 @@ export default function App() {
           the UI reports, so the page sits INSIDE the layout under the top
           bar and stays touchable. Invisible (and untouchable) until the UI
           reveals it; hidden entirely on home. */}
-      {browserSource && (
-        <Animated.View
-          pointerEvents={paneVisible ? 'auto' : 'none'}
-          style={[
-            styles.browser,
-            pane
-              ? { left: pane.x, top: pane.y, width: pane.w, height: pane.h }
-              : styles.browserHidden,
-            {
-              opacity: reveal,
-              transform: [
-                { translateY: reveal.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
-              ],
-            },
-          ]}
-        >
+      {browserSource && (() => {
+        const r = pane ?? lastRectRef.current;
+        // While `rdown` clips the wrapper to the wipe region, the WebView's
+        // frame stays STATIC at the full slot (`frame`), shifted upward inside
+        // the wrapper — only the wrapper's bounds animate, so the page's
+        // viewport never resizes mid-wipe (that relayout caused visible lag
+        // and made pages like Google self-reload mid-animation).
+        const fr = r?.frame;
+        return (
+          <Animated.View
+            pointerEvents={paneVisible ? 'auto' : 'none'}
+            style={[
+              styles.browser,
+              r
+                ? { left: r.x, top: r.y, width: r.w, height: r.h }
+                : styles.browserHidden,
+              {
+                opacity: reveal,
+                transformOrigin: 'top center',
+                transform: [
+                  { scaleY: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
+                ],
+              },
+            ]}
+          >
           <WebView
             key={activeTab.id}
             ref={browserRef}
+            style={[
+              styles.browserWeb,
+              fr && r ? { left: fr.x - r.x, top: fr.y - r.y, width: fr.w, height: fr.h } : null,
+            ]}
             source={browserSource}
             originWhitelist={['*']}
             userAgent={SAFARI_UA}
             injectedJavaScript={SNIFFER_JS}
+            injectedJavaScriptBeforeContentLoaded={PULL_JS}
             onMessage={handleBrowserMessage}
             onNavigationStateChange={handleBrowserNav}
-            onLoadStart={() =>
-              relayToUi('pageLoad', { tabIndex: activeIndex, state: 'start' })
-            }
-            onLoadEnd={() => relayToUi('pageLoad', { tabIndex: activeIndex, state: 'end' })}
+            onLoadStart={() => {
+              console.log('[vd] browser load start', activeTab.url);
+              relayToUi('pageLoad', { tabIndex: activeIndex, state: 'start' });
+            }}
+            onLoadEnd={() => {
+              console.log('[vd] browser load end', activeTab.url);
+              relayToUi('pageLoad', { tabIndex: activeIndex, state: 'end' });
+            }}
             onError={(e) =>
               relayToUi('pageLoad', {
                 tabIndex: activeIndex,
@@ -385,10 +506,10 @@ export default function App() {
             domStorageEnabled
             allowsInlineMediaPlayback
             setSupportMultipleWindows={false}
-            style={styles.browserWeb}
           />
-        </Animated.View>
-      )}
+          </Animated.View>
+        );
+      })()}
     </View>
   );
 }
@@ -411,7 +532,11 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   browserWeb: {
-    flex: 1,
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#0e0f14',
   },
   web: {

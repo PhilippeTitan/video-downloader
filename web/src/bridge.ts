@@ -115,6 +115,11 @@ export function requestNavigation(url: string): boolean {
   return sendNativeAction('navigate', { url })
 }
 
+/** Send a debug line to the native shell console (Metro terminal). */
+export function debugLog(msg: string): void {
+  sendNativeAction('log', { msg })
+}
+
 /** Ask the shell to switch the active browsing tab (Q010, Q046).
  *  Index order mirrors the web tab list (web is the source of truth). */
 export function requestSwitchTab(index: number): boolean {
@@ -183,6 +188,11 @@ export interface BrowserPaneRect {
   h: number
   /** false = positioned but invisible (page loads hidden); true = revealed. */
   visible: boolean
+  /** Full (unclipped) slot rect. Set only while `rdown` clips x/y/w/h to the
+   *  wipe region — the native shell keeps the WebView's frame STATIC at
+   *  `frame` and clips it with an overflow wrapper instead, so the page's
+   *  viewport never resizes mid-animation (no relayout, no reloads). */
+  frame?: { x: number; y: number; w: number; h: number }
 }
 
 /** Place the browsing WebView INSIDE the app layout at this rect (the
