@@ -24,9 +24,14 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
 // Framed browsing pane helpers — implemented below, called from the tab code.
 - (void)resetPaneForWebView:(WKWebView *)web;
 - (void)applyBrowserPane:(NSDictionary *)payload;
-- (void)setPaneVisible:(BOOL)visible onWebView:(WKWebView *)web animated:(BOOL)animated;
+- (void)setPaneVisible:(BOOL)visible onView:(UIView *)view animated:(BOOL)animated;
+// Clip container for the static-frame wipe (holds the browsing WebView at its
+// full-slot frame while the container itself follows the clipped pane rect).
+@property (nonatomic, strong) UIView *paneContainer;
 // YES while the placed pane is revealed to the user (fade-in done, not yet faded).
 @property (nonatomic, assign) BOOL paneRevealed;
+// Chevron enablement + live URL per tab, relayed to the chrome as `navState`.
+- (void)relayNavStateForWebView:(WKWebView *)web;
 @end
 
 @implementation BrowserViewController
@@ -97,6 +102,17 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     if (sniffer.length) {
         WKUserScript *script = [[WKUserScript alloc] initWithSource:sniffer
                                                       injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                                   forMainFrameOnly:YES];
+        [config.userContentController addUserScript:script];
+    }
+
+    NSString *pullPath = [NSBundle.mainBundle pathForResource:@"Pull" ofType:@"js"];
+    NSString *pull = pullPath ? [NSString stringWithContentsOfFile:pullPath
+                                                          encoding:NSUTF8StringEncoding
+                                                             error:NULL] : nil;
+    if (pull.length) {
+        WKUserScript *script = [[WKUserScript alloc] initWithSource:pull
+                                                      injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                    forMainFrameOnly:YES];
         [config.userContentController addUserScript:script];
     }
@@ -171,6 +187,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     [self.view insertSubview:next belowSubview:self.chrome];
     next.frame = self.view.bounds;
     self.activeTabIndex = index;
+    [self relayNavStateForWebView:next];
 }
 
 - (void)addTabWithURL:(NSString *)urlString {
@@ -238,6 +255,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
 /** Undo the pane treatment on a browsing view that is going away from the slot. */
 - (void)resetPaneForWebView:(WKWebView *)web {
     if (!web) return;
+    if (web.superview == _paneContainer) [web removeFromSuperview];
     web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     web.layer.cornerRadius = 0;
     web.layer.masksToBounds = NO;
@@ -247,6 +265,13 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     web.alpha = 1.0;
     web.transform = CGAffineTransformIdentity;
     web.userInteractionEnabled = YES;
+    if (_paneContainer) {
+        [_paneContainer.layer removeAllAnimations];
+        _paneContainer.transform = CGAffineTransformIdentity;
+        _paneContainer.alpha = 1.0;
+        _paneContainer.hidden = YES;
+        _paneContainer.userInteractionEnabled = YES;
+    }
 }
 
 /**
@@ -254,31 +279,32 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
  * slide-in, 350 ms in / 220 ms out). The page keeps loading while hidden —
  * alpha, not `hidden`, so WebKit never suspends rendering.
  */
-- (void)setPaneVisible:(BOOL)visible onWebView:(WKWebView *)web animated:(BOOL)animated {
-    if (!web) return;
+- (void)setPaneVisible:(BOOL)visible onView:(UIView *)view animated:(BOOL)animated {
+    if (!view) return;
     if (self.paneRevealed == visible) {
         // Already there: pin the resting state (mid-flight frame changes can't drift).
-        web.alpha = visible ? 1.0 : 0.0;
-        web.hidden = NO;
+        view.alpha = visible ? 1.0 : 0.0;
+        view.hidden = NO;
+        view.userInteractionEnabled = visible;
         return;
     }
     self.paneRevealed = visible;
-    web.hidden = NO;
-    web.userInteractionEnabled = visible;
+    view.hidden = NO;
+    view.userInteractionEnabled = visible;
     if (!animated) {
-        [web.layer removeAllAnimations];
-        web.alpha = visible ? 1.0 : 0.0;
-        web.transform = visible ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 16);
+        [view.layer removeAllAnimations];
+        view.alpha = visible ? 1.0 : 0.0;
+        view.transform = visible ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 16);
         return;
     }
     // Start from the far end so the slide always reads as motion.
-    web.transform = visible ? CGAffineTransformMakeTranslation(0, 16) : CGAffineTransformIdentity;
+    view.transform = visible ? CGAffineTransformMakeTranslation(0, 16) : CGAffineTransformIdentity;
     [UIView animateWithDuration:(visible ? 0.35 : 0.22)
                           delay:0
                         options:UIViewAnimationOptionCurveEaseOut | UIViewAnimationOptionAllowUserInteraction
                      animations:^{
-        web.alpha = visible ? 1.0 : 0.0;
-        web.transform = visible ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 16);
+        view.alpha = visible ? 1.0 : 0.0;
+        view.transform = visible ? CGAffineTransformIdentity : CGAffineTransformMakeTranslation(0, 16);
     } completion:nil];
 }
 
@@ -318,13 +344,37 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     BOOL visible = ![payload[@"visible"] isKindOfClass:NSNumber.class]
         || [payload[@"visible"] boolValue];
 
-    web.autoresizingMask = UIViewAutoresizingNone;
-    web.layer.cornerRadius = 18;
-    web.layer.masksToBounds = YES;
-    if (web.superview != self.view) [self.view addSubview:web];
-    [self.view bringSubviewToFront:web]; // over the chrome, confined to the slot
-    web.frame = CGRectMake(x.doubleValue, y.doubleValue, w.doubleValue, h.doubleValue);
-    [self setPaneVisible:visible onWebView:web animated:YES];
+    // Static-frame wipe: `frame` is the full slot — the WebView keeps that
+    // size for the whole sweep (WK relayouts are what made the wipe lag and
+    // reload Google pages). x/y/w/h is the currently visible clip rect that
+    // the container follows; legacy payloads without `frame` fill it exactly.
+    NSDictionary *frame = [payload[@"frame"] isKindOfClass:NSDictionary.class] ? payload[@"frame"] : nil;
+    double fx = [frame[@"x"] isKindOfClass:NSNumber.class] ? [frame[@"x"] doubleValue] : x.doubleValue;
+    double fy = [frame[@"y"] isKindOfClass:NSNumber.class] ? [frame[@"y"] doubleValue] : y.doubleValue;
+    double fw = [frame[@"w"] isKindOfClass:NSNumber.class] ? [frame[@"w"] doubleValue] : w.doubleValue;
+    double fh = [frame[@"h"] isKindOfClass:NSNumber.class] ? [frame[@"h"] doubleValue] : h.doubleValue;
+
+    if (!self.paneContainer) {
+        self.paneContainer = [[UIView alloc] initWithFrame:CGRectZero];
+        self.paneContainer.backgroundColor = UIColor.clearColor;
+    }
+    if (!self.paneContainer.superview) [self.view addSubview:self.paneContainer];
+    self.paneContainer.frame = CGRectMake(x.doubleValue, y.doubleValue, w.doubleValue, h.doubleValue);
+    self.paneContainer.layer.cornerRadius = 18;
+    self.paneContainer.layer.masksToBounds = YES;
+
+    if (web.superview != self.paneContainer) {
+        [self.paneContainer addSubview:web];
+        web.autoresizingMask = UIViewAutoresizingNone;
+        web.layer.cornerRadius = 0;   // the container clips — the webview never does
+        web.layer.masksToBounds = NO;
+        web.alpha = 1.0;             // the container fades, not the webview
+        web.transform = CGAffineTransformIdentity;
+        web.userInteractionEnabled = YES;
+    }
+    web.frame = CGRectMake(fx - x.doubleValue, fy - y.doubleValue, fw, fh);
+    [self.view bringSubviewToFront:self.paneContainer]; // over the chrome, clipped to the rect
+    [self setPaneVisible:visible onView:self.paneContainer animated:YES];
 }
 
 #pragma mark - Page-load relay (drives the UI's load -> done gate)
@@ -345,6 +395,23 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     }];
 }
 
+/** Tell the chrome the active tab's history state (chevron enablement). */
+- (void)relayNavStateForWebView:(WKWebView *)web {
+    if (!web || web != [self activeTab]) return;
+    NSUInteger idx = [self.tabs indexOfObject:web];
+    if (idx == NSNotFound) return;
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"navState",
+        @"payload": @{
+            @"tabIndex": @(idx),
+            @"url": web.URL.absoluteString ?: @"",
+            @"canGoBack": @(web.canGoBack),
+            @"canGoForward": @(web.canGoForward),
+        },
+    }];
+}
+
 /** Only the visible tab's loads matter; about:blank is the shell's own
  *  placeholder and must not flip the UI's gate before a search starts. */
 - (BOOL)shouldRelayLoadForWebView:(WKWebView *)webView {
@@ -358,9 +425,17 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     [self relayPageLoadState:@"start" url:webView.URL.absoluteString message:nil];
 }
 
+// canGoBack/canGoForward flip at commit — relay before the page finishes
+// loading so the chevrons respond right after a back/forward tap.
+- (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
+    if (webView != [self activeTab]) return;
+    [self relayNavStateForWebView:webView];
+}
+
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     if (![self shouldRelayLoadForWebView:webView]) return;
     [self relayPageLoadState:@"end" url:webView.URL.absoluteString message:nil];
+    [self relayNavStateForWebView:webView];
 }
 
 - (void)webView:(WKWebView *)webView didFailProvisionalNavigation:(WKNavigation *)navigation
@@ -744,12 +819,18 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
             NSURL *parsed = [NSURL URLWithString:url];
             if (parsed) [[self activeTab] loadRequest:[NSURLRequest requestWithURL:parsed]];
         }
-    } else if ([type isEqualToString:@"back"]) {
+    } else if ([type isEqualToString:@"back"] || [type isEqualToString:@"goBack"]) {
         [[self activeTab] goBack];
-    } else if ([type isEqualToString:@"forward"]) {
+    } else if ([type isEqualToString:@"forward"] || [type isEqualToString:@"goForward"]) {
         [[self activeTab] goForward];
     } else if ([type isEqualToString:@"reload"]) {
         [[self activeTab] reload];
+    } else if ([type isEqualToString:@"pull-refresh"]) {
+        // Browsing page pulled down at its top — let the chrome run its
+        // refresh flow (spinner + reload), same as the Expo shell.
+        if (message.webView == [self activeTab]) {
+            [self sendToChrome:@{ @"source": @"vd-native", @"type": @"pullRefresh", @"payload": @{} }];
+        }
     } else if ([type isEqualToString:@"browserPane"]) {
         [self applyBrowserPane:payload];
     } else if ([type isEqualToString:@"newTab"]) {
