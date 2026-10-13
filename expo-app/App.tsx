@@ -1,8 +1,9 @@
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Easing, Animated, StyleSheet, View } from 'react-native';
+import { Easing, Animated, Dimensions, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 import type { WebViewMessageEvent, WebViewNavigation } from 'react-native-webview';
+import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { WEB_HTML } from './webBundle';
 
 /**
@@ -14,18 +15,46 @@ import { WEB_HTML } from './webBundle';
  *
  * Tab model: the web UI is the source of truth for ordering; it pushes the
  * full list via `syncTabs`. The shell mirrors it here and keeps a per-tab
- * URL history stack for back/forward. Only the ACTIVE tab's browsing
- * WebView is mounted (iPad 6th gen RAM budget).
+ * URL history stack for back/forward. Tabs with a URL keep their browsing
+ * WebView ALIVE across switches (up to MAX_ALIVE_TABS most-recent; older
+ * ones are evicted and resume at their last page on next activation), so
+ * switching tabs is instant — no reload.
  */
 
 const SAFARI_UA =
-  'Mozilla/5.0 (iPad; CPU OS 17_7 like Mac OS X) AppleWebKit/605.1.15 ' +
-  '(KHTML, like Gecko) Version/17.7 Mobile/15E148 Safari/604.1';
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 ' +
+  '(KHTML, like Gecko) Version/17.7 Safari/605.1.15';
+
+/** Mobile subdomains pin their mobile site regardless of UA (e.g.
+ *  m.youtube.com serves the sticky mini-player layout even to desktop
+ *  browsers). Top-level requests to these hosts are rewritten to the
+ *  desktop counterpart so pages match real iPad Safari behavior. */
+const MOBILE_HOST_REWRITES: Record<string, string> = {
+  'm.youtube.com': 'www.youtube.com',
+};
+
+function rewriteMobileUrl(url: string): string | null {
+  const m = /^(https?:\/\/)([^/?#]+)([/?#].*)?$/i.exec(url);
+  if (!m) return null;
+  const target = MOBILE_HOST_REWRITES[m[2].toLowerCase()];
+  if (!target) return null;
+  return m[1] + target + (m[3] || '');
+}
+
+/** How many browsing WebViews stay mounted (active + most recently seen).
+ *  iPad 6th gen (2GB RAM): beyond this the LRU tab is evicted; it reloads
+ *  at its last known page when re-activated. */
+const MAX_ALIVE_TABS = 4;
 
 interface ShellTab {
   id: string;
+  /** Source-driver URL: changes only on explicit loads (search, address bar,
+   *  history-jump fallback) — in-page navigations never touch it, so the
+   *  WebView is never re-driven by a render. */
   url: string;
   title?: string;
+  /** Live page URL as reported by onNavigationStateChange (display + evict-resume). */
+  currentUrl?: string;
 }
 
 interface TabHistory {
@@ -51,6 +80,12 @@ const SNIFFER_JS = `
 (function () {
   if (window.__vdSniff) return;
   window.__vdSniff = true;
+  try {
+    window.ReactNativeWebView.postMessage(JSON.stringify({
+      source: 'vd-browser', type: 'ua',
+      payload: { ua: navigator.userAgent },
+    }));
+  } catch (e) {}
   function post(url, kind) {
     if (!url || url.indexOf('blob:') === 0) return;
     try {
@@ -106,6 +141,20 @@ const SNIFFER_JS = `
     } catch (e) {}
     return oo.apply(this, arguments);
   };
+  var lastI = 0;
+  function ping() {
+    var now = Date.now();
+    if (now - lastI < 400) return;
+    lastI = now;
+    try {
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        source: 'vd-browser', type: 'interact',
+      }));
+    } catch (e) {}
+  }
+  ['touchstart', 'mousedown', 'wheel'].forEach(function (ev) {
+    window.addEventListener(ev, ping, { passive: true, capture: true });
+  });
 })();
 true;
 `;
@@ -172,13 +221,55 @@ true;
 
 export default function App() {
   const uiRef = useRef<WebView>(null);
-  const browserRef = useRef<WebView>(null);
+  const webviewRefs = useRef<Record<string, WebView | null>>({});
+  // Native back/forward capability per tab (from onNavigationStateChange —
+  // v13's imperative ref doesn't expose canGoBack/canGoForward).
+  const navCapsRef = useRef<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({});
   const detectedRef = useRef<Set<string>>(new Set());
   const historiesRef = useRef<Record<string, TabHistory>>({});
 
   const [tabs, setTabs] = useState<ShellTab[]>([{ id: 'tab-1', url: '', title: 'Start' }]);
   const [activeIndex, setActiveIndex] = useState(0);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  // Last-activation timestamps for the alive-set LRU (see MAX_ALIVE_TABS).
+  const seenRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const t = tabs[activeIndex];
+    if (t?.url) seenRef.current[t.id] = Date.now();
+  }, [activeIndex, tabs]);
   const [pane, setPane] = useState<PaneRect | null>(null);
+  // Visual state of the native nav rail (screen + badges), pushed by the UI.
+  const [rail, setRail] = useState<{
+    screen: string;
+    dlActive: number;
+    dlFailed: boolean;
+    libNew: boolean;
+    dlDot: boolean;
+  }>({ screen: 'browse', dlActive: 0, dlFailed: false, libNew: false, dlDot: false });
+  // Nav-rail slide: 0 = out (visible), 1 = tucked under the left edge.
+  const railX = useRef(new Animated.Value(0)).current;
+  const [railOut, setRailOut] = useState(true);
+  const hideRail = useCallback(() => {
+    setRailOut(false);
+    Animated.timing(railX, {
+      toValue: 1,
+      duration: 260,
+      easing: Easing.in(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [railX]);
+  const showRail = useCallback(() => {
+    setRailOut(true);
+    Animated.spring(railX, {
+      toValue: 0,
+      speed: 18,
+      bounciness: 6,
+      useNativeDriver: true,
+    }).start();
+  }, [railX]);
+  // Any touch inside a browsing page tucks the rail; back on home it returns.
+  // (Effect body sits below, after `paneVisible` is declared.)
   // Last non-null slot rect — when the UI hides the pane (home) we keep
   // fading OUT AT the slot position instead of jumping to full screen.
   const lastRectRef = useRef<PaneRect | null>(null);
@@ -188,6 +279,9 @@ export default function App() {
   // (slow stretch from the top edge, matching the design's `done` phase),
   // and fades out again on the return sweep.
   const paneVisible = !!pane?.visible;
+  useEffect(() => {
+    if (!paneVisible) showRail();
+  }, [paneVisible, showRail]);
   const reveal = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(reveal, {
@@ -208,53 +302,71 @@ export default function App() {
     );
   }, []);
 
-  /** Push navState for the active browsing tab (chevrons + pill titles). */
+  /** Push navState for a browsing tab (chevrons + per-tab page URL in the UI). */
   const relayNavState = useCallback(
-    (url: string, title?: string) => {
-      const tab = tabs[activeIndex];
+    (tabIndex: number, url: string, title?: string) => {
+      const tab = tabsRef.current[tabIndex];
       if (!tab) return;
-      const hist = historiesRef.current[tab.id] ?? { stack: [tab.url || url].filter(Boolean), index: 0 };
+      const hist = historiesRef.current[tab.id] ?? { stack: [tab.currentUrl || url].filter(Boolean), index: 0 };
       relayToUi('navState', {
-        tabIndex: activeIndex,
+        tabIndex,
         url,
         title,
         canGoBack: hist.index > 0,
         canGoForward: hist.index < hist.stack.length - 1,
       });
     },
-    [activeIndex, relayToUi, tabs],
+    [relayToUi],
   );
 
   const handleBrowserNav = useCallback(
-    (nav: WebViewNavigation) => {
-      const tab = tabs[activeIndex];
+    (nav: WebViewNavigation, tabId: string) => {
+      const list = tabsRef.current;
+      const idx = list.findIndex((t) => t.id === tabId);
+      const tab = idx >= 0 ? list[idx] : undefined;
       if (!tab || !nav.url || nav.url === 'about:blank') return;
-      // Mirror in-page navigation into the tab's history stack.
-      const hist = historiesRef.current[tab.id];
+      navCapsRef.current[tabId] = { canGoBack: nav.canGoBack, canGoForward: nav.canGoForward };
+      // Mirror navigation into the tab's history stack; a native back/forward
+      // lands on an existing entry — move the cursor instead of pushing.
+      const hist = historiesRef.current[tabId];
       if (!hist) {
-        historiesRef.current[tab.id] = { stack: [nav.url], index: 0 };
+        historiesRef.current[tabId] = { stack: [nav.url], index: 0 };
+      } else if (hist.stack[hist.index - 1] === nav.url) {
+        historiesRef.current[tabId] = { ...hist, index: hist.index - 1 };
+      } else if (hist.stack[hist.index + 1] === nav.url) {
+        historiesRef.current[tabId] = { ...hist, index: hist.index + 1 };
       } else if (hist.stack[hist.index] !== nav.url) {
-        historiesRef.current[tab.id] = {
+        historiesRef.current[tabId] = {
           stack: [...hist.stack.slice(0, hist.index + 1), nav.url],
           index: hist.index + 1,
         };
       }
-      // Live title/url for the UI tab strip.
+      // Live page URL + title for the UI. `url` (the source driver) stays at
+      // the entry URL — updating it here would re-drive the WebView.
       setTabs((prev) =>
-        prev.map((t, i) => (i === activeIndex ? { ...t, url: nav.url, title: t.title || nav.title || nav.url } : t)),
+        prev.map((t) =>
+          t.id === tabId ? { ...t, currentUrl: nav.url, title: t.title || nav.title || nav.url } : t,
+        ),
       );
-      relayNavState(nav.url, nav.title);
+      relayNavState(idx, nav.url, nav.title);
     },
-    [activeIndex, relayNavState, tabs],
+    [relayNavState],
   );
 
+  // Switching tabs re-pushes the target tab's live URL so the web's per-tab
+  // mirror re-stamps (switch-backs use it to avoid re-navigating the page).
+  useEffect(() => {
+    const t = tabsRef.current[activeIndex];
+    if (t?.currentUrl) relayNavState(activeIndex, t.currentUrl, t.title);
+  }, [activeIndex, relayNavState]);
+
   const handleBrowserMessage = useCallback(
-    (event: WebViewMessageEvent) => {
+    (event: WebViewMessageEvent, tabId: string) => {
       try {
         const msg = JSON.parse(event.nativeEvent.data) as {
           source?: string;
           type?: string;
-          payload?: { url?: string; kind?: string; title?: string };
+          payload?: { url?: string; kind?: string; title?: string; ua?: string };
         };
         if (msg.source === 'vd-browser' && msg.type === 'detect' && msg.payload?.url) {
           // Dedupe: the sniffer re-reports the same resources every poll.
@@ -268,19 +380,25 @@ export default function App() {
             url: msg.payload.url,
             kind: msg.payload.kind || 'video',
             title: msg.payload.title,
-            tabId: tabs[activeIndex]?.id,
+            tabId,
           });
         } else if (msg.source === 'vd-browser' && msg.type === 'pull-refresh') {
           // Overscroll-at-top inside the browsing page -> let the UI run its
           // refresh flow (spinner + requestReload), single reload path.
-          console.log('[vd] pull-refresh | tabs:', tabs.length, 'active:', activeIndex);
+          console.log('[vd] pull-refresh | tab:', tabId);
           relayToUi('pullRefresh', {});
+        } else if (msg.source === 'vd-browser' && msg.type === 'interact') {
+          hideRail();
+        } else if (msg.source === 'vd-browser' && msg.type === 'ua') {
+          // Confirms the UA the page actually sees (customUserAgent only
+          // applies on load — this catches stale-prop or cookie-pinning bugs).
+          console.log('[vd] page UA |', msg.payload?.ua ?? '?');
         }
       } catch {
         /* non-envelope message from page */
       }
     },
-    [activeIndex, relayToUi, tabs],
+    [hideRail, relayToUi],
   );
 
   const handleUiMessage = useCallback(
@@ -312,7 +430,7 @@ export default function App() {
             historiesRef.current[activeTab.id] = { stack: [url], index: 0 };
           }
           setTabs((prev) =>
-            prev.map((t, i) => (i === activeIndex ? { ...t, url, title: url } : t)),
+            prev.map((t, i) => (i === activeIndex ? { ...t, url, currentUrl: url, title: url } : t)),
           );
           break;
         }
@@ -320,13 +438,20 @@ export default function App() {
           const payload = msg.payload as
             | { tabs?: ShellTab[]; activeIndex?: number }
             | undefined;
-          if (Array.isArray(payload?.tabs) && payload.tabs.length > 0) {
-            console.log('[vd] syncTabs', payload.tabs.length, 'active:', payload.activeIndex, payload.tabs.map((t) => t.title || t.url || '-').join(' | '));
-            // Preserve per-tab histories; adopt web's ordering + urls.
-            setTabs(payload.tabs);
-            const nextActive = Math.min(payload.activeIndex ?? 0, payload.tabs.length - 1);
-            setActiveIndex(Math.max(0, nextActive));
-          }
+          if (!Array.isArray(payload?.tabs) || payload.tabs.length === 0) break;
+          console.log('[vd] syncTabs', payload.tabs.length, 'active:', payload.activeIndex, payload.tabs.map((t) => t.title || t.url || '-').join(' | '));
+          // Merge by id: known tabs keep the shell's live page (their WebView
+          // stays mounted — web's url field is just a mirror); adopt web's
+          // order + titles. New ids adopt web's url as their entry URL.
+          const next: ShellTab[] = payload.tabs.map((wt) => {
+            const existing = tabs.find((t) => t.id === wt.id);
+            return existing
+              ? { ...existing, title: wt.title || existing.title }
+              : { id: wt.id, url: wt.url || '', title: wt.title, currentUrl: wt.url || undefined };
+          });
+          setTabs(next);
+          const nextActive = Math.max(0, Math.min(payload.activeIndex ?? 0, next.length - 1));
+          setActiveIndex(nextActive);
           break;
         }
         case 'switchTab': {
@@ -358,37 +483,56 @@ export default function App() {
           break;
         }
         case 'reload': {
-          console.log('[vd] reload', activeTab?.url ?? '');
-          browserRef.current?.reload();
+          const wv = activeTab ? webviewRefs.current[activeTab.id] : undefined;
+          console.log('[vd] reload', activeTab?.currentUrl ?? activeTab?.url ?? '');
+          wv?.reload();
           break;
         }
         case 'goBack': {
-          const hist = activeTab ? historiesRef.current[activeTab.id] : undefined;
+          const tab = activeTab;
+          if (!tab) break;
+          const wv = webviewRefs.current[tab.id];
+          const hist = historiesRef.current[tab.id];
+          const caps = navCapsRef.current[tab.id];
           if (hist && hist.index > 0) {
+            if (wv && caps?.canGoBack) {
+              // Prefer WKWebView's own history: page state (scroll, DOM,
+              // media) survives; the nav event moves the stack cursor.
+              wv.goBack();
+              break;
+            }
             const nextIndex = hist.index - 1;
-            historiesRef.current[activeTab.id] = { ...hist, index: nextIndex };
+            historiesRef.current[tab.id] = { ...hist, index: nextIndex };
             const url = hist.stack[nextIndex];
             setTabs((prev) =>
-              prev.map((t, i) => (i === activeIndex ? { ...t, url } : t)),
+              prev.map((t, i) => (i === activeIndex ? { ...t, url, currentUrl: url } : t)),
             );
-            relayNavState(url);
-          } else {
-            browserRef.current?.goBack();
+            relayNavState(activeIndex, url);
+          } else if (wv && caps?.canGoBack) {
+            wv.goBack();
           }
           break;
         }
         case 'goForward': {
-          const hist = activeTab ? historiesRef.current[activeTab.id] : undefined;
+          const tab = activeTab;
+          if (!tab) break;
+          const wv = webviewRefs.current[tab.id];
+          const hist = historiesRef.current[tab.id];
+          const caps = navCapsRef.current[tab.id];
           if (hist && hist.index < hist.stack.length - 1) {
+            if (wv && caps?.canGoForward) {
+              wv.goForward();
+              break;
+            }
             const nextIndex = hist.index + 1;
-            historiesRef.current[activeTab.id] = { ...hist, index: nextIndex };
+            historiesRef.current[tab.id] = { ...hist, index: nextIndex };
             const url = hist.stack[nextIndex];
             setTabs((prev) =>
-              prev.map((t, i) => (i === activeIndex ? { ...t, url } : t)),
+              prev.map((t, i) => (i === activeIndex ? { ...t, url, currentUrl: url } : t)),
             );
-            relayNavState(url);
-          } else {
-            browserRef.current?.goForward();
+            relayNavState(activeIndex, url);
+          } else if (wv && caps?.canGoForward) {
+            wv.goForward();
           }
           break;
         }
@@ -414,6 +558,20 @@ export default function App() {
           });
           break;
         }
+        case 'rail': {
+          const p = msg.payload as
+            | { screen?: string; dlActive?: number; dlFailed?: boolean; libNew?: boolean; dlDot?: boolean }
+            | undefined;
+          if (!p) break;
+          setRail({
+            screen: p.screen ?? 'browse',
+            dlActive: p.dlActive ?? 0,
+            dlFailed: !!p.dlFailed,
+            libNew: !!p.libNew,
+            dlDot: !!p.dlDot,
+          });
+          break;
+        }
         default:
           console.log('[shell]', msg.type, msg.payload ?? '');
       }
@@ -421,10 +579,76 @@ export default function App() {
     [activeIndex, activeTab, relayNavState, tabs],
   );
 
-  // The browsing WebView: mounted only when the active tab has a URL.
-  const browserSource = useMemo(
-    () => (activeTab?.url ? { uri: activeTab.url } : null),
-    [activeTab?.url],
+  // Alive set: the active tab (if it has a page) plus the MAX_ALIVE_TABS-1
+  // most recently seen others. Tabs outside the set are evicted (unmounted)
+  // to respect the RAM budget.
+  const aliveIds = useMemo(() => {
+    const alive = new Set<string>();
+    const active = tabs[activeIndex];
+    if (active?.url) alive.add(active.id);
+    const others = tabs
+      .filter((t) => !!t.url && t.id !== active?.id)
+      .sort((a, b) => (seenRef.current[b.id] ?? 0) - (seenRef.current[a.id] ?? 0))
+      .slice(0, Math.max(0, MAX_ALIVE_TABS - alive.size));
+    for (const t of others) alive.add(t.id);
+    return alive;
+  }, [tabs, activeIndex]);
+
+  // Before an evicted tab unmounts, promote its live page URL to the entry
+  // URL — re-activating it resumes where it was instead of the first page.
+  const prevAliveRef = useRef(aliveIds);
+  useEffect(() => {
+    const evicted = [...prevAliveRef.current].filter((id) => !aliveIds.has(id));
+    prevAliveRef.current = aliveIds;
+    if (evicted.length === 0) return;
+    setTabs((cur) =>
+      cur.map((t) =>
+        evicted.includes(t.id) && t.currentUrl && t.currentUrl !== t.url
+          ? { ...t, url: t.currentUrl }
+          : t,
+      ),
+    );
+  }, [aliveIds]);
+
+  // Floating download button: draggable anywhere, but X always springs back
+  // to the right edge (the "magnet"); Y stays where it was dropped.
+  const fabPan = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const fabStartRef = useRef({ x: 0, y: 0 });
+  const fabMovedRef = useRef(false);
+  const fabPosRef = useRef({ x: 0, y: 0 });
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: () => {
+          fabMovedRef.current = false;
+          fabStartRef.current = { ...fabPosRef.current };
+          fabPan.setValue(fabStartRef.current);
+        },
+        onPanResponderMove: (_evt, g) => {
+          if (Math.abs(g.dx) > 4 || Math.abs(g.dy) > 4) fabMovedRef.current = true;
+          fabPan.setValue({ x: fabStartRef.current.x + g.dx, y: fabStartRef.current.y + g.dy });
+        },
+        onPanResponderRelease: (_evt, g) => {
+          // Base sits at bottom:200 / right:20 — clamp Y so the 70px button
+          // stays fully on screen (12px margin), and magnet X back to the edge.
+          const H = Dimensions.get('window').height;
+          const yRaw = fabStartRef.current.y + g.dy;
+          const yMin = 12 - (H - 200 - 70);
+          const yMax = 200 - 12;
+          const next = { x: 0, y: Math.max(yMin, Math.min(yMax, yRaw)) };
+          fabPosRef.current = next;
+          Animated.spring(fabPan, {
+            toValue: next,
+            speed: 22,
+            bounciness: 10,
+            useNativeDriver: true,
+          }).start();
+          if (!fabMovedRef.current) relayToUi('rail', { item: 'download' });
+        },
+      }),
+    [fabPan, relayToUi],
   );
 
   return (
@@ -444,13 +668,13 @@ export default function App() {
         style={styles.web}
       />
 
-      {/* Browsing WebView — drawn above the UI but confined to the slot rect
-          the UI reports, so the page sits INSIDE the layout under the top
-          bar and stays touchable. Invisible (and untouchable) until the UI
-          reveals it; hidden entirely on home. */}
-      {browserSource && (() => {
+      {/* Browsing WebViews — one per alive tab, drawn above the UI but
+          confined to the slot rect the UI reports. The ACTIVE tab's WebView
+          is positioned in the slot; the others are display:none (kept alive,
+          page state intact) so switching tabs is instant. */}
+      {tabs.some((t) => t.url) && (() => {
         const r = pane ?? lastRectRef.current;
-        // While `rdown` clips the wrapper to the wipe region, the WebView's
+        // While `rdown` clips the wrapper to the wipe region, the WebViews'
         // frame stays STATIC at the full slot (`frame`), shifted upward inside
         // the wrapper — only the wrapper's bounds animate, so the page's
         // viewport never resizes mid-wipe (that relayout caused visible lag
@@ -464,52 +688,180 @@ export default function App() {
               r
                 ? { left: r.x, top: r.y, width: r.w, height: r.h }
                 : styles.browserHidden,
-              {
-                opacity: reveal,
-                transformOrigin: 'top center',
-                transform: [
-                  { scaleY: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
-                ],
-              },
+            {
+              opacity: reveal,
+              // RN has no transformOrigin — a bare scaleY shrinks around the
+              // CENTER, dipping the pane's top edge ~3% of its height on every
+              // reveal. Pair it with a translateY so the scale pins to the top.
+              transform: [
+                {
+                  translateY: reveal.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-0.03 * ((r && r.h) || 0), 0],
+                  }),
+                },
+                { scaleY: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.94, 1] }) },
+              ],
+            },
             ]}
           >
-          <WebView
-            key={activeTab.id}
-            ref={browserRef}
-            style={[
-              styles.browserWeb,
-              fr && r ? { left: fr.x - r.x, top: fr.y - r.y, width: fr.w, height: fr.h } : null,
-            ]}
-            source={browserSource}
-            originWhitelist={['*']}
-            userAgent={SAFARI_UA}
-            injectedJavaScript={SNIFFER_JS}
-            injectedJavaScriptBeforeContentLoaded={PULL_JS}
-            onMessage={handleBrowserMessage}
-            onNavigationStateChange={handleBrowserNav}
-            onLoadStart={() => {
-              console.log('[vd] browser load start', activeTab.url);
-              relayToUi('pageLoad', { tabIndex: activeIndex, state: 'start' });
-            }}
-            onLoadEnd={() => {
-              console.log('[vd] browser load end', activeTab.url);
-              relayToUi('pageLoad', { tabIndex: activeIndex, state: 'end' });
-            }}
-            onError={(e) =>
-              relayToUi('pageLoad', {
-                tabIndex: activeIndex,
-                state: 'error',
-                message: e.nativeEvent.description || 'Couldn\u2019t load that page',
-              })
-            }
-            javaScriptEnabled
-            domStorageEnabled
-            allowsInlineMediaPlayback
-            setSupportMultipleWindows={false}
-          />
+          {tabs.map((tab, idx) => {
+            if (!tab.url || !aliveIds.has(tab.id)) return null;
+            const isActive = idx === activeIndex;
+            const tabId = tab.id;
+            return (
+              <WebView
+                key={tabId}
+                ref={(w: WebView | null) => {
+                  webviewRefs.current[tabId] = w;
+                }}
+                style={[
+                  styles.browserWeb,
+                  !isActive && styles.browserWebHidden,
+                  isActive && fr && r
+                    ? { left: fr.x - r.x, top: fr.y - r.y, width: fr.w, height: fr.h }
+                    : null,
+                ]}
+                source={{ uri: tab.url }}
+                originWhitelist={['*']}
+                userAgent={SAFARI_UA}
+                injectedJavaScript={SNIFFER_JS}
+                injectedJavaScriptBeforeContentLoaded={PULL_JS}
+                onMessage={(e) => handleBrowserMessage(e, tabId)}
+                onNavigationStateChange={(nav) => handleBrowserNav(nav, tabId)}
+                onShouldStartLoadWithRequest={(req) => {
+                  if (req.isTopFrame === false) return true;
+                  const fixed = rewriteMobileUrl(req.url);
+                  if (fixed && fixed !== tab.url) {
+                    console.log('[vd] mobile host rewrite |', req.url, '->', fixed);
+                    setTabs((prev) =>
+                      prev.map((t, i) => (i === idx ? { ...t, url: fixed, currentUrl: fixed } : t)),
+                    );
+                    return false;
+                  }
+                  return true;
+                }}
+                onLoadStart={() => {
+                  console.log('[vd] browser load start', tabId, tab.url);
+                  relayToUi('pageLoad', { tabIndex: idx, state: 'start' });
+                }}
+                onLoadEnd={() => {
+                  console.log('[vd] browser load end', tabId, tab.url);
+                  relayToUi('pageLoad', { tabIndex: idx, state: 'end' });
+                }}
+                onError={(e) =>
+                  relayToUi('pageLoad', {
+                    tabIndex: idx,
+                    state: 'error',
+                    message: e.nativeEvent.description || 'Couldn\u2019t load that page',
+                  })
+                }
+                javaScriptEnabled
+                domStorageEnabled
+                allowsInlineMediaPlayback
+                setSupportMultipleWindows={false}
+              />
+            );
+          })}
           </Animated.View>
         );
       })()}
+
+      {/* Native nav rail — always above every WebView layer (chrome-over-
+          content parity with the iOS shell). Tucks under the left edge on
+          page interaction; the > handle slides it back out. */}
+      <Animated.View
+        pointerEvents="box-none"
+        style={[
+          styles.rail,
+          {
+            transform: [
+              {
+                translateX: railX.interpolate({ inputRange: [0, 1], outputRange: [0, -90] }),
+              },
+            ],
+          },
+        ]}
+      >
+        <View style={styles.railCol}>
+          <Pressable
+            onPress={() => relayToUi('rail', { item: 'home' })}
+            style={[styles.railBtn, rail.screen === 'browse' && styles.railBtnOn]}
+          >
+            <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={rail.screen === 'browse' ? '#d7ccff' : '#c9cfdb'} strokeWidth={1.8}>
+              <Circle cx="12" cy="12" r="9" />
+              <Path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" />
+            </Svg>
+          </Pressable>
+          <Pressable
+            onPress={() => relayToUi('rail', { item: 'down' })}
+            style={[styles.railBtn, rail.screen === 'down' && styles.railBtnOn]}
+          >
+            <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={rail.screen === 'down' ? '#d7ccff' : '#c9cfdb'} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <Path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14" />
+            </Svg>
+            {rail.dlActive > 0 && (
+              <View
+                style={[
+                  styles.railBadge,
+                  { backgroundColor: rail.dlFailed ? '#ff7a9c' : '#3ecf8e' },
+                ]}
+              >
+                <Text style={styles.railBadgeText}>{rail.dlActive}</Text>
+              </View>
+            )}
+          </Pressable>
+          <Pressable
+            onPress={() => relayToUi('rail', { item: 'lib' })}
+            style={[styles.railBtn, rail.screen === 'lib' && styles.railBtnOn]}
+          >
+            <Svg width={26} height={26} viewBox="0 0 24 24" fill="none" stroke={rail.screen === 'lib' ? '#d7ccff' : '#c9cfdb'} strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+              <Rect x="3" y="5" width="18" height="14" rx="3" />
+              <Path d="M10 9.5v5l4.5-2.5z" />
+            </Svg>
+            {rail.libNew && <View style={styles.railDot} />}
+          </Pressable>
+        </View>
+      </Animated.View>
+
+      {/* Rail restore handle — visible only while the rail is tucked. */}
+      <Animated.View
+        pointerEvents={railOut ? 'none' : 'auto'}
+        style={{
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          justifyContent: 'center',
+          zIndex: 12,
+          opacity: railX,
+        }}
+      >
+        <Pressable onPress={showRail} style={styles.railHandle} hitSlop={10}>
+          <Svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="#e8eaf0" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M9 6l6 6-6 6" />
+          </Svg>
+        </Pressable>
+      </Animated.View>
+
+      {/* Floating download button — magnet-stuck to the right edge, draggable
+          vertically; tap toggles the format sheet in the UI. */}
+      <Animated.View
+        pointerEvents="box-none"
+        style={[
+          styles.fab,
+          { transform: [{ translateX: fabPan.x }, { translateY: fabPan.y }] },
+        ]}
+      >
+        <View {...panResponder.panHandlers} style={styles.fabBtn}>
+          <Svg width={30} height={30} viewBox="0 0 24 24" fill="none" stroke="#ffffff" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round">
+            <Path d="M12 3v12" />
+            <Path d="M7 10l5 5 5-5" />
+            <Path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+          </Svg>
+          {rail.dlDot && <View style={styles.fabDot} />}
+        </View>
+      </Animated.View>
     </View>
   );
 }
@@ -539,7 +891,116 @@ const styles = StyleSheet.create({
     height: '100%',
     backgroundColor: '#0e0f14',
   },
+  browserWebHidden: {
+    display: 'none',
+  },
   web: {
     backgroundColor: 'transparent',
+  },
+  rail: {
+    position: 'absolute',
+    left: 20,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    zIndex: 10,
+  },
+  railCol: {
+    flexDirection: 'column',
+    gap: 14,
+  },
+  railBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Omnicolor: translucent dark chip keeps the icon readable over any page.
+    backgroundColor: 'rgba(22,24,34,0.78)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.14)',
+    shadowColor: '#000',
+    shadowOpacity: 0.8,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 6,
+  },
+  railBtnOn: {
+    backgroundColor: '#3a2f78',
+    borderColor: 'rgba(183,166,255,0.5)',
+  },
+  railHandle: {
+    width: 30,
+    height: 72,
+    borderTopRightRadius: 16,
+    borderBottomRightRadius: 16,
+    backgroundColor: 'rgba(22,24,34,0.82)',
+    borderWidth: 1,
+    borderLeftWidth: 0,
+    borderColor: 'rgba(255,255,255,0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.8,
+    shadowRadius: 3,
+    shadowOffset: { width: 2, height: 2 },
+    elevation: 6,
+  },
+  fab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 200,
+    zIndex: 11,
+  },
+  fabBtn: {
+    width: 70,
+    height: 70,
+    borderRadius: 20,
+    backgroundColor: '#6c47eb',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#7c5cff',
+    shadowOpacity: 0.45,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 10,
+  },
+  fabDot: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#34d399',
+    borderWidth: 2,
+    borderColor: '#0e0f14',
+  },
+  railBadge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  railBadgeText: {
+    color: '#06130d',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  railDot: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#7c5cff',
   },
 });

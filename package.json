@@ -8,6 +8,7 @@
     "expo-app"
   ],
   "scripts": {
+    "postinstall": "node tools/apply-ngrok-patches.cjs",
     "dev": "npm run dev --workspace=web",
     "build": "npm run build --workspace=web",
     "bundle:web": "npm run build --workspace=web && node tools/inline.cjs && node tools/expo-bundle.cjs",

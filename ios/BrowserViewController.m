@@ -526,7 +526,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     } else {
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
         // Forward Safari UA and Referer per Q059
-        [req setValue:@"Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" forHTTPHeaderField:@"User-Agent"];
+        [req setValue:@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.7 Safari/605.1.15" forHTTPHeaderField:@"User-Agent"];
         if ([self activeTab].URL.absoluteString) {
             [req setValue:[self activeTab].URL.absoluteString forHTTPHeaderField:@"Referer"];
         }

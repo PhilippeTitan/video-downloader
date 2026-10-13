@@ -1,5 +1,5 @@
 import React from 'react'
-import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, requestReload, onNavState, requestNavigation, debugLog } from './bridge'
+import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, requestReload, onNavState, requestNavigation, requestSyncTabs, debugLog, sendNativeAction } from './bridge'
 import type { BrowserPaneRect } from './bridge'
 
 interface FavItem {
@@ -42,6 +42,10 @@ interface TabItem {
   id: number
   text: string
   priv?: boolean
+  /** Entry/live page URL for this tab. The native shell keeps the tab's
+   *  browsing WebView alive across switches, so this must hold the URL the
+   *  WebView should mount at — NOT a re-resolved search (no reloads). */
+  url?: string
 }
 
 interface SeqState {
@@ -50,6 +54,9 @@ interface SeqState {
   phase: 'fade' | 'scan' | 'load' | 'done' | 'rdown' | 'rup' | 'rfade'
   t0?: number
   skip?: boolean
+  /** Re-search / restore from a live page: keep the pane revealed through
+   *  `load` instead of hiding it (the page must stay on top). */
+  keepUp?: boolean
 }
 
 interface FormatOption {
@@ -332,18 +339,22 @@ export default class App extends React.Component<{}, AppState> {
   }
 
   lastPaneKey = ''
+  lastRailKey = ''
+  lastTickAt = 0
+  sheetRef = React.createRef<HTMLElement>()
+  sheetSyncTimer: number | null = null
 
   syncBrowserPane = () => {
     if (!hasNativeShell()) return
     const el = this.browserSlotRef.current
     const s = this.state
     // The browsing WebView is a native layer ABOVE the whole UI, so it must
-    // drop while any UI overlay covers the slot: tab switcher, tab quick
-    // actions, format sheet, new-tab zoom, add-favorite modal.
+    // drop while a FULL-SCREEN UI overlay covers the slot: tab switcher,
+    // tab quick actions, new-tab zoom, add-favorite modal. The format sheet
+    // is bottom-anchored — it clips the pane instead (below).
     const overlayUp = Boolean(
       s.sw || s.swp > 0 ||
       s.tm || s.tmp > 0 ||
-      s.sheet ||
       s.nz ||
       s.adding || s.mp > 0
     )
@@ -379,7 +390,9 @@ export default class App extends React.Component<{}, AppState> {
       ...slot,
       // The page mounts hidden at the final rect during `scan`+`load` (loads
       // while the bar stretches); the shell stretches it in only at `done`.
-      visible: !s.seq || phase === 'done' || rdown,
+      // `keepUp`: a re-search from a live page must NOT hide the page — it
+      // stays revealed on top through the load.
+      visible: !s.seq || phase === 'done' || rdown || (phase === 'load' && !!s.seq.keepUp),
     }
     // Wipe sync: the UI's clip-path can't touch a native layer above us, so
     // clip the pane itself to the region below the descending bar's bottom edge.
@@ -396,6 +409,25 @@ export default class App extends React.Component<{}, AppState> {
           pane.h = Math.max(0, slot.h - clip)
         }
       }
+    }
+    // Format sheet: bottom-anchored overlay — clip the pane to the region
+    // above the sheet (same static-frame wipe) so the page stays ON TOP
+    // while the sheet covers the lower screen. Measured mid-slide the sheet
+    // rect is still off-screen, so re-sync once its 0.36s animation ends.
+    if (s.sheet) {
+      const sr = this.sheetRef.current?.getBoundingClientRect()
+      if (sr) {
+        const clip = Math.round(rect.bottom - sr.top)
+        if (clip > 0) {
+          pane.frame = pane.frame ?? slot
+          pane.h = Math.max(0, pane.h - clip)
+        }
+      }
+      if (this.sheetSyncTimer) clearTimeout(this.sheetSyncTimer)
+      this.sheetSyncTimer = setTimeout(() => {
+        this.sheetSyncTimer = null
+        this.syncBrowserPane()
+      }, 400)
     }
     // Only post on actual change — a new message every tick makes the native
     // wrapper re-render and the loading WebView flicker.
@@ -596,8 +628,30 @@ export default class App extends React.Component<{}, AppState> {
         this.triggerRefresh()
       } else if (data.type === 'nav' && data.payload?.url) {
         this.setState({ webviewUrl: data.payload.url })
+      } else if (data.type === 'rail' && data.payload?.item) {
+        // Native nav-rail / FAB tap (the shell draws both above the page).
+        const item = data.payload.item
+        if (item === 'home') this.goHome()
+        else if (item === 'down') this.setState({ screen: 'down' })
+        else if (item === 'lib') this.setState({ screen: 'lib' })
+        else if (item === 'download') this.setState((st) => ({ sheet: !st.sheet }))
       }
     }
+  }
+
+  /** Mirror the nav rail's visual state (screen + badges) to the native shell,
+   *  which renders the rail above every WebView layer. */
+  pushRailState = () => {
+    if (!hasNativeShell()) return
+    const s = this.state
+    const dlActive = s.jobs.filter((r) => r.status === 'downloading').length
+    const dlFailed = s.jobs.some((r) => r.status === 'failed')
+    const libNew = s.lib.some((r) => r.isNew)
+    const dlDot = !!s.detectedVideo
+    const key = `${s.screen}|${dlActive}|${dlFailed ? 1 : 0}|${libNew ? 1 : 0}|${dlDot ? 1 : 0}`
+    if (key === this.lastRailKey) return
+    this.lastRailKey = key
+    sendNativeAction('rail', { screen: s.screen, dlActive, dlFailed, libNew, dlDot })
   }
 
   tabTextPatch = (tabs: TabItem[], ci: number, text: string): TabItem[] =>
@@ -630,7 +684,7 @@ export default class App extends React.Component<{}, AppState> {
     const patch: Record<string, unknown> = {
       screen: 'browse',
       searchFocused: false,
-      seq: { key: 'search:' + query, text: query, phase: initialPhase, t0: Date.now() },
+      seq: { key: 'search:' + query, text: query, phase: initialPhase, t0: Date.now(), keepUp: isAlreadyUp || undefined },
       sp: 0,
       q: query,
       tabs: updatedTabs,
@@ -642,6 +696,10 @@ export default class App extends React.Component<{}, AppState> {
       const target = resolveWebTarget(query)
       patch.webviewSrc = target.src
       patch.webviewUrl = target.url
+      patch.tabs = updatedTabs.map((t, idx) =>
+        idx === this.state.ci ? { ...t, url: target.src } : t,
+      )
+      if (curTab) this.liveShellTabs.add(curTab.id)
     }
 
     this.setState(patch as any, () => {
@@ -700,6 +758,28 @@ export default class App extends React.Component<{}, AppState> {
         localStorage.setItem(STORAGE_KEY_DH, JSON.stringify(this.state.dhRows))
       } catch {}
     }
+  }
+
+  /** True for exactly one componentDidUpdate after a tab switch / back-forward
+   *  jump: the shell already shows the target page (its WebView stays alive),
+   *  so the `webviewSrc` change must NOT be forwarded as a `navigate`. */
+  suppressNav = false
+
+  /** Tab ids that currently have a live browsing page open in the native
+   *  shell. The per-tab url mirror can miss navState events; this flag is the
+   *  fallback so switching back (or closing back) never re-navigates a page
+   *  the shell still has alive. */
+  liveShellTabs = new Set<number>()
+
+  /** Push the web tab list (source of truth for order + ids) to the shell so
+   *  its browsing-WebView mirror can't drift. Runs on mount and whenever the
+   *  list or the active index changes. */
+  pushTabSync = () => {
+    if (!hasNativeShell()) return
+    requestSyncTabs(
+      this.state.tabs.map((t) => ({ id: String(t.id), url: t.url || '', title: t.text })),
+      this.state.ci,
+    )
   }
 
   clearHistTimeout: any = null
@@ -858,6 +938,7 @@ export default class App extends React.Component<{}, AppState> {
   componentDidMount() {
     this.handleResize()
     this.measureStrips()
+    this.pushRailState()
     window.addEventListener('resize', this.handleResize)
     window.addEventListener('orientationchange', this.handleResize)
     window.addEventListener('message', this.handleMessage)
@@ -919,7 +1000,16 @@ export default class App extends React.Component<{}, AppState> {
     }, 16)
 
     this.unsubNav = onNavState((e) => {
+      // Per-tab page URL (source of truth for tab.url) + active-tab chrome.
+      const tabs = this.state.tabs.map((t, idx) =>
+        idx === e.tabIndex ? { ...t, url: e.url || t.url } : t,
+      )
+      if (e.tabIndex !== this.state.ci) {
+        this.setState({ tabs })
+        return
+      }
       this.setState({
+        tabs,
         canGoBackNative: e.canGoBack,
         canGoForwardNative: e.canGoForward,
         webviewUrl: e.url || this.state.webviewUrl,
@@ -929,6 +1019,14 @@ export default class App extends React.Component<{}, AppState> {
     this.tick = setInterval(() => {
       const s = this.state
       const up: Partial<AppState> = {}
+      // Time-based progression: a heavy page (YouTube) can starve this
+      // WebView's main thread for hundreds of ms per tick — fixed +0.0x
+      // increments then crawl and the rdown wipe parks the pane mid-screen
+      // ("under the center"). Advance by elapsed time so the sweep keeps
+      // wall-clock pace no matter the jank (dt clamped to 3 ticks).
+      const now = Date.now()
+      const dt = Math.min(90, now - (this.lastTickAt || now))
+      this.lastTickAt = now
       if (s.adding && s.mp < 1) up.mp = Math.min(1, s.mp + 0.14)
       if (s.sw && s.swp < 1) up.swp = Math.min(1, s.swp + 0.14)
       if (s.sw) up.swt = Math.min(6000, s.swt + 30)
@@ -958,7 +1056,7 @@ export default class App extends React.Component<{}, AppState> {
       }
       if (s.seq) {
         if (s.seq.phase === 'fade') {
-          const p = Math.min(1, s.sp + 0.045)
+          const p = Math.min(1, s.sp + dt / 667)
           up.sp = p
           if (p === 1) {
             // Resolve the Web target at fade->scan (not scan->load) so the
@@ -968,12 +1066,17 @@ export default class App extends React.Component<{}, AppState> {
             const target = resolveWebTarget(txt)
             up.webviewSrc = target.src
             up.webviewUrl = target.url
+            // Stamp the resolved URL onto the active tab so switching away
+            // and back reuses it (the shell keeps the page alive) instead of
+            // re-running the search.
+            up.tabs = s.tabs.map((t, idx) => (idx === s.ci ? { ...t, url: target.src } : t))
             if (!s.cpriv) {
               up.hist = [txt, ...s.hist.filter((h) => h !== txt)].slice(0, 8)
               setTimeout(this.saveStorage, 100)
             }
             const curTab = s.tabs[s.ci]
             if (curTab) {
+              this.liveShellTabs.add(curTab.id)
               this.pushTabHistory(curTab.id, txt)
             }
             this.handleVideoDetected(txt)
@@ -981,23 +1084,23 @@ export default class App extends React.Component<{}, AppState> {
             up.sp = 0
           }
         } else if (s.seq.phase === 'scan') {
-          const p = Math.min(1, s.sp + (s.seq.skip ? 0.04 : 0.025))
+          const p = Math.min(1, s.sp + dt / (s.seq.skip ? 750 : 1200))
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: s.seq.skip ? 'done' : 'load', t0: Date.now() }
             up.sp = 0
           }
         } else if (s.seq.phase === 'load') {
-          const p = Math.min(1, s.sp + 0.04)
+          const p = Math.min(1, s.sp + dt / 750)
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: 'done' }
             up.sp = 0
           }
         } else if (s.seq.phase === 'done' && s.sp < 1) {
-          up.sp = Math.min(1, s.sp + 0.07)
+          up.sp = Math.min(1, s.sp + dt / 429)
         } else if (s.seq.phase === 'rdown') {
-          const p = Math.min(1, s.sp + 0.04)
+          const p = Math.min(1, s.sp + dt / 750)
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: 'rup' }
@@ -1017,14 +1120,14 @@ export default class App extends React.Component<{}, AppState> {
             }
           }
         } else if (s.seq.phase === 'rup') {
-          const p = Math.min(1, s.sp + 0.045)
+          const p = Math.min(1, s.sp + dt / 667)
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: 'rfade' }
             up.sp = 0
           }
         } else if (s.seq.phase === 'rfade') {
-          const p = Math.min(1, s.sp + 0.08)
+          const p = Math.min(1, s.sp + dt / 375)
           up.sp = p
           if (p === 1) {
             up.seq = null
@@ -1113,6 +1216,7 @@ export default class App extends React.Component<{}, AppState> {
           up.cpriv = false
           this.pos = {}
           this.pp = []
+          this.liveShellTabs.clear()
         }
       }
       if (s.cl) {
@@ -1192,6 +1296,9 @@ export default class App extends React.Component<{}, AppState> {
       }
       if (Object.keys(up).length) this.setState(up as any)
     }, 30)
+
+    // Align the shell's tab mirror (ids, order, active) before first paint.
+    this.pushTabSync()
   }
 
   componentDidUpdate(_prevProps: {}, prevState: AppState) {
@@ -1205,7 +1312,23 @@ export default class App extends React.Component<{}, AppState> {
     }
     this.syncBrowserPane()
     this.measureStrips()
-    if (hasNativeShell() && this.state.webviewSrc && this.state.webviewSrc !== prevState.webviewSrc) {
+    if (prevState.tabs !== this.state.tabs || prevState.ci !== this.state.ci) {
+      this.pushTabSync()
+    }
+    if (
+      prevState.screen !== this.state.screen ||
+      prevState.jobs !== this.state.jobs ||
+      prevState.lib !== this.state.lib ||
+      prevState.detectedVideo !== this.state.detectedVideo
+    ) {
+      this.pushRailState()
+    }
+    if (this.suppressNav) {
+      // Consumed unconditionally: even if webviewSrc ended up unchanged
+      // (two tabs on the same URL), the flag must not leak into the next
+      // genuine navigation.
+      this.suppressNav = false
+    } else if (hasNativeShell() && this.state.webviewSrc && this.state.webviewSrc !== prevState.webviewSrc) {
       requestNavigation(this.state.webviewSrc)
     }
   }
@@ -1213,6 +1336,7 @@ export default class App extends React.Component<{}, AppState> {
   componentWillUnmount() {
     if (this.clearHistTimeout) clearTimeout(this.clearHistTimeout)
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
+    if (this.sheetSyncTimer) clearTimeout(this.sheetSyncTimer)
     if (this.unsubNav) this.unsubNav()
     clearInterval(this.t)
     clearInterval(this.tick)
@@ -1223,17 +1347,22 @@ export default class App extends React.Component<{}, AppState> {
   }
 
   geo(n: number, mn: number, mx: number, gap: number, pmin: number) {
+    // Strip-relative constants from the mockup (140px side margins, 24px
+    // edge-mask inset): cap = vw - 280 - 48. At the mockup's 820 this is
+    // exactly 492 and base 164 — pixel-identical there, viewport-correct here.
+    const vw = this.state.vw || 820
+    const cap = Math.max(120, vw - 328)
     let w: number, pitch: number
-    if (n * mn + gap * (n - 1) <= 492) {
-      w = Math.min(mx, Math.floor((492 - gap * (n - 1)) / n))
+    if (n * mn + gap * (n - 1) <= cap) {
+      w = Math.min(mx, Math.floor((cap - gap * (n - 1)) / n))
       pitch = w + gap
     } else {
       w = mn
-      pitch = Math.max(pmin, Math.floor((492 - mn) / (n - 1)))
+      pitch = Math.max(pmin, Math.floor((cap - mn) / (n - 1)))
     }
     const content = (n - 1) * pitch + w
-    const over = content > 492
-    return { w, pitch, content, over, range: over ? content - 492 : 0, base: over ? 164 : (820 - content) / 2 }
+    const over = content > cap
+    return { w, pitch, content, over, range: over ? content - cap : 0, base: over ? 164 : (vw - content) / 2 }
   }
 
   ids(s: AppState): string[] {
@@ -1759,11 +1888,15 @@ export default class App extends React.Component<{}, AppState> {
 
     const pageUp = !!sq && (ph === 'load' || ph === 'done')
     const curText = pageUp ? sq.text : ''
-    const restore = (text: string): Partial<AppState> => {
+    const restore = (text: string, liveUrl?: string): Partial<AppState> => {
       if (!text) {
         return { seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null }
       }
-      const target = resolveWebTarget(text)
+      // `liveUrl` = the tab's page the shell still has open — reuse it instead
+      // of re-resolving the text (switching tabs must not reload the page).
+      const target = liveUrl
+        ? { src: liveUrl, url: liveUrl, domain: getDisplayDomain(liveUrl) }
+        : resolveWebTarget(text)
       return {
         seq: { key: 'restore', text, phase: 'done', t0: Date.now() },
         sp: 1,
@@ -1799,7 +1932,8 @@ export default class App extends React.Component<{}, AppState> {
       )
       const target = updatedTabs[targetIdx]
       if (!target) return
-      const targetText = getTabEffectiveText(target, targetIdx)
+      const liveUrl = target.url
+      const targetText = getTabEffectiveText(target, targetIdx) || (liveUrl ? getDisplayDomain(liveUrl) : '')
       const patch = {
         tabs: updatedTabs.map((t, idx) => (idx === targetIdx ? { ...t, text: targetText } : t)),
         ci: targetIdx,
@@ -1807,9 +1941,20 @@ export default class App extends React.Component<{}, AppState> {
         sw: false,
         screen: 'browse' as const,
       }
-      if (targetText) {
+      if (liveUrl || this.liveShellTabs.has(target.id)) {
+        // The shell still has this tab's page open — switch instantly to it
+        // (flag fallback: a missed navState must not re-navigate the tab).
+        this.suppressNav = true
+        this.liveShellTabs.add(target.id)
         this.setState({
           ...patch,
+          ...restore(targetText, liveUrl),
+        } as any)
+      } else if (targetText) {
+        const resolved = resolveWebTarget(targetText)
+        this.setState({
+          ...patch,
+          tabs: patch.tabs.map((t, idx) => (idx === targetIdx ? { ...t, url: resolved.src } : t)),
           ...restore(targetText),
         } as any)
       } else if (pageUp) {
@@ -1857,11 +2002,21 @@ export default class App extends React.Component<{}, AppState> {
         const nextCi = Math.max(0, Math.min(remaining.length - 1, activeIndex >= k ? activeIndex - 1 : activeIndex))
         const activeTab = remaining[nextCi]
         const effText = getTabEffectiveText(activeTab, nextCi)
+        const liveUrl = activeTab.url
+        this.liveShellTabs.delete(id)
+        // Closing back to a tab the shell still has open must not re-drive it
+        // (same flag fallback as switchToTab).
+        if (liveUrl || this.liveShellTabs.has(activeTab.id)) this.suppressNav = true
         this.setState({
-          tabs: remaining,
+          tabs:
+            liveUrl || !effText
+              ? remaining
+              : remaining.map((t, idx) =>
+                  idx === nextCi ? { ...t, url: resolveWebTarget(effText).src } : t,
+                ),
           ci: nextCi,
           cpriv: !!activeTab.priv,
-          ...(effText ? restore(effText) : { seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null }),
+          ...(effText ? restore(effText, liveUrl) : { seq: null, sp: 0, q: '', webviewSrc: '', webviewUrl: '', detectedVideo: null }),
         } as any)
       }
       this.setState({ cl: { id: String(id) }, cf: 0 })
@@ -1935,8 +2090,8 @@ export default class App extends React.Component<{}, AppState> {
           position: 'absolute',
           left: Number((s.nz.x * (1 - nzz)).toFixed(1)),
           top: Number((s.nz.y * (1 - nzz)).toFixed(1)),
-          width: Number((s.nz.w + (820 - s.nz.w) * nzz).toFixed(1)),
-          height: Number((s.nz.h + (1180 - s.nz.h) * nzz).toFixed(1)),
+          width: Number((s.nz.w + ((s.vw || 820) - s.nz.w) * nzz).toFixed(1)),
+          height: Number((s.nz.h + ((s.vh || 1180) - s.nz.h) * nzz).toFixed(1)),
           boxSizing: 'border-box',
           borderRadius: Math.round(20 * (1 - nzz)),
           background: '#0e0f14',
@@ -2274,10 +2429,13 @@ export default class App extends React.Component<{}, AppState> {
     const endL = gE.base + (nEnd - 1) * gE.pitch - (gE.over ? gE.range : 0)
     const endW = gE.w
     const plusFrac = Math.max(0, Math.min(1, (npz - 0.3) / 0.6))
+    // The + button's left edge (right:20, 126px cluster) at the live width —
+    // mockup hard-codes 674 for its 820 viewport.
+    const plusX = (s.vw || 820) - 146
 
     const npStyle: React.CSSProperties = {
       position: 'absolute',
-      left: Number((674 + (endL - 674) * npz).toFixed(1)),
+      left: Number((plusX + (endL - plusX) * npz).toFixed(1)),
       top: Number((48 + 8 * npz).toFixed(1)),
       width: Number((60 + (endW - 60) * npz).toFixed(1)),
       height: Number((60 - 16 * npz).toFixed(1)),
@@ -4202,7 +4360,9 @@ export default class App extends React.Component<{}, AppState> {
                 </button>
               )}
 
-              {/* Left Navigation Rail */}
+              {/* Left Navigation Rail — pure-web demo only; the native shell
+                  renders this rail natively ABOVE every WebView layer. */}
+              {!hasNativeShell() && (
               <div
                 style={{
                   position: 'absolute',
@@ -4212,7 +4372,7 @@ export default class App extends React.Component<{}, AppState> {
                   display: 'flex',
                   alignItems: 'center',
                   pointerEvents: 'none',
-                  zIndex: 40,
+                  zIndex: 200,
                 }}
               >
                 <nav style={{ pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -4284,6 +4444,7 @@ export default class App extends React.Component<{}, AppState> {
                   </button>
                 </nav>
               </div>
+              )}
 
               {/* Top Navigation Bar Elements (when not in downloads screen) */}
               {s.screen !== 'down' && (
@@ -4374,6 +4535,7 @@ export default class App extends React.Component<{}, AppState> {
                           const target = resolveWebTarget(prevText)
                           if (hasNativeShell()) {
                             requestGoBack()
+                            this.suppressNav = true
                           }
                           this.setState({
                             q: prevText,
@@ -4436,6 +4598,7 @@ export default class App extends React.Component<{}, AppState> {
                           const target = resolveWebTarget(nextText)
                           if (hasNativeShell()) {
                             requestGoForward()
+                            this.suppressNav = true
                           }
                           this.setState({
                             q: nextText,
@@ -4678,12 +4841,13 @@ export default class App extends React.Component<{}, AppState> {
                       position: 'absolute',
                       left: 140,
                       top: 36,
-                      width: 540,
+                      width: Math.max(200, (s.vw || 820) - 280),
                       height: 110,
                       overflow: 'hidden',
                       touchAction: 'pan-y',
                       cursor: this.dr.sf ? 'grabbing' : 'grab',
                       pointerEvents: s.pa > 0.5 ? 'auto' : 'none',
+                      zIndex: 41,
                       maskImage: gT.over ? edge : 'none',
                       WebkitMaskImage: gT.over ? edge : 'none',
                     }}
@@ -4715,12 +4879,13 @@ export default class App extends React.Component<{}, AppState> {
                       position: 'absolute',
                       left: 140,
                       top: 116,
-                      width: 540,
+                      width: Math.max(200, (s.vw || 820) - 280),
                       height: 38,
                       overflow: 'hidden',
                       touchAction: 'pan-y',
                       cursor: this.dr.sf ? 'grabbing' : 'grab',
                       pointerEvents: s.pb > 0.5 ? 'auto' : 'none',
+                      zIndex: 41,
                       maskImage: gU.over ? edge : 'none',
                       WebkitMaskImage: gU.over ? edge : 'none',
                     }}
@@ -5100,8 +5265,9 @@ export default class App extends React.Component<{}, AppState> {
                 </>
               )}
 
-              {/* Floating Download Squircle Action Button (Vertically Centered on Right Edge) */}
-              {s.screen === 'browse' && !s.sw && s.swp === 0 && !s.dw && (
+              {/* Floating Download FAB — pure-web demo only; the native shell
+                  draws its own draggable magnet FAB above every WebView. */}
+              {!hasNativeShell() && s.screen === 'browse' && !s.sw && s.swp === 0 && !s.dw && (
                 <button
                   aria-label="Download media"
                   onClick={() => this.setState({ sheet: !s.sheet })}
@@ -5182,6 +5348,7 @@ export default class App extends React.Component<{}, AppState> {
                     }}
                   />
                   <aside
+                    ref={this.sheetRef}
                     className="sheet-slide-up"
                     style={{
                       position: 'absolute',

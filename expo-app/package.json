@@ -5,13 +5,14 @@
   "dependencies": {
     "@expo/cli": "^57.0.28",
     "@expo/ngrok-bin": "^2.3.42",
-    "expo": "~57.0.27",
+    "expo": "~57.0.28",
     "expo-asset": "~57.0.19",
     "expo-constants": "~57.0.21",
     "expo-status-bar": "~57.0.1",
     "got": "^11.8.6",
     "react": "19.2.3",
     "react-native": "0.86.3",
+    "react-native-svg": "15.15.4",
     "react-native-webview": "13.16.1"
   },
   "devDependencies": {
