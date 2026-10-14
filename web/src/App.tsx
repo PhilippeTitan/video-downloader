@@ -1008,6 +1008,7 @@ export default class App extends React.Component<{}, AppState> {
 
     this.unsubPageLoad = onPageLoad((e) => {
       if (e.tabIndex !== this.state.ci || (e.state !== 'end' && e.state !== 'error')) return
+      if (!this.loadStartedAt) return
       this.pageLoaded = true
       const seq = this.state.seq
       if (seq?.phase === 'load' && Date.now() - this.loadStartedAt >= 350 && this.state.sp >= 1) {
@@ -1097,7 +1098,7 @@ export default class App extends React.Component<{}, AppState> {
             }
             this.handleVideoDetected(txt)
             this.pageLoaded = false
-            this.loadStartedAt = 0
+            this.loadStartedAt = Date.now()
             up.seq = { ...s.seq, phase: 'scan' }
             up.sp = 0
           }
@@ -1105,10 +1106,6 @@ export default class App extends React.Component<{}, AppState> {
           const p = Math.min(1, s.sp + dt / (s.seq.skip ? 750 : 1200))
           up.sp = p
           if (p === 1) {
-            if (!s.seq.skip) {
-              this.pageLoaded = false
-              this.loadStartedAt = Date.now()
-            }
             up.seq = { ...s.seq, phase: s.seq.skip ? 'done' : 'load', t0: Date.now() }
             up.sp = 0
           }
@@ -1364,10 +1361,9 @@ export default class App extends React.Component<{}, AppState> {
     if (this.clearHistTimeout) clearTimeout(this.clearHistTimeout)
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
     if (this.sheetSyncTimer) clearTimeout(this.sheetSyncTimer)
-  if (this.unsubNav) this.unsubNav()
-  if (this.unsubPageLoad) this.unsubPageLoad()
-  clearInterval(this.t)
-
+    if (this.unsubNav) this.unsubNav()
+    if (this.unsubPageLoad) this.unsubPageLoad()
+    clearInterval(this.t)
     clearInterval(this.tick)
     window.removeEventListener('resize', this.handleResize)
     window.removeEventListener('orientationchange', this.handleResize)
