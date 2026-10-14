@@ -695,28 +695,28 @@ export default class App extends React.Component<{}, AppState> {
       tabs: updatedTabs,
       hist: nextHist,
     }
-    // Re-search from a live page skips `scan`, so resolve the target here —
-    // the scan->load hook only runs on the full fade->scan->load path.
-    let navTarget: string | null = null
-    if (isAlreadyUp) {
-      const target = resolveWebTarget(query)
-      navTarget = target.src
-      // The navigation is sent EXPLICITLY from the setState callback below;
-      // componentDidUpdate's webviewSrc-change detection alone silently skips
-      // a repeat query (same URL) or a stale webviewSrc (after in-page taps).
-      this.suppressNav = true
-      patch.webviewSrc = target.src
-      patch.webviewUrl = target.url
-      patch.tabs = updatedTabs.map((t, idx) =>
-        idx === this.state.ci ? { ...t, url: target.src } : t,
-      )
-      if (curTab) this.liveShellTabs.add(curTab.id)
-    }
+    // Resolve and start navigation at Enter time, rather than waiting for the
+    // fade phase to finish. The page can load behind the transition while the
+    // native pane remains hidden, removing the ~667 ms navigation dead time.
+    const target = resolveWebTarget(query)
+    const navTarget = target.src
+    // The navigation is sent explicitly below. This also handles repeat
+    // searches where webviewSrc is unchanged and componentDidUpdate would not
+    // emit a request.
+    this.suppressNav = true
+    patch.webviewSrc = target.src
+    patch.webviewUrl = target.url
+    patch.tabs = updatedTabs.map((t, idx) =>
+      idx === this.state.ci ? { ...t, url: target.src } : t,
+    )
+    this.pageLoaded = false
+    this.loadStartedAt = Date.now()
+    if (curTab) this.liveShellTabs.add(curTab.id)
 
     this.setState(patch as any, () => {
       this.saveStorage()
       this.handleVideoDetected(query)
-      if (navTarget && hasNativeShell()) requestNavigation(navTarget)
+      if (hasNativeShell()) requestNavigation(navTarget)
     })
   }
 
@@ -1103,14 +1103,19 @@ export default class App extends React.Component<{}, AppState> {
             up.sp = 0
           }
         } else if (s.seq.phase === 'scan') {
-          const p = Math.min(1, s.sp + dt / (s.seq.skip ? 750 : 1200))
+          // Navigation starts at Enter. If the page has already reported its
+          // first load by the end of the scan, only keep the visual phase long
+          // enough to avoid a one-frame flash; slow pages retain the full scan.
+          const scanDuration = s.seq.skip ? 750 : (this.pageLoaded ? 220 : 1200)
+          const p = Math.min(1, s.sp + dt / scanDuration)
           up.sp = p
           if (p === 1) {
             up.seq = { ...s.seq, phase: s.seq.skip ? 'done' : 'load', t0: Date.now() }
             up.sp = 0
           }
         } else if (s.seq.phase === 'load') {
-          const p = Math.min(1, s.sp + dt / 750)
+          const loadDuration = this.pageLoaded ? 220 : 750
+          const p = Math.min(1, s.sp + dt / loadDuration)
           up.sp = p
           // Do not reveal a blank pane: wait for native pageLoad.end after a
           // short minimum, with a bounded fallback for slow or silent pages.
