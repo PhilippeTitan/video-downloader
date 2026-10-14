@@ -1,10 +1,17 @@
 #import "BrowserViewController.h"
 #import "AppDelegate.h"
+#import <QuartzCore/QuartzCore.h>
 
 static NSString *const kVDHandler = @"vd";
 static const NSInteger kMaxTabs = 10;          // Q016
 static NSString *const kJobMetaDefaultsKey = @"vd.jobmeta";   // Stage E: job title/ext/url across relaunch
 static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg";
+// Real iPad Safari identifies as desktop Mac Safari (iPadOS desktop-class
+// browsing) — YouTube then serves the desktop layout without the sticky
+// mini-player. Matches the Expo shell's SAFARI_UA.
+static NSString *const kSafariDesktopUA =
+    @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+    @"(KHTML, like Gecko) Version/17.7 Safari/605.1.15";
 
 @interface BrowserViewController () <WKNavigationDelegate, WKScriptMessageHandler, NSURLSessionDownloadDelegate>
 @property (nonatomic, strong) NSMutableArray<WKWebView *> *tabs;
@@ -32,6 +39,45 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
 @property (nonatomic, assign) BOOL paneRevealed;
 // Chevron enablement + live URL per tab, relayed to the chrome as `navState`.
 - (void)relayNavStateForWebView:(WKWebView *)web;
+// Native nav rail + magnet FAB (Expo-harness parity): left chip column above
+// every WebView layer, auto-hiding on page interaction with a > restore handle;
+// draggable download FAB stuck to the right edge.
+@property (nonatomic, strong) UIView *rail;
+@property (nonatomic, strong) UIView *railHomeBtn;
+@property (nonatomic, strong) UIView *railDownBtn;
+@property (nonatomic, strong) UIView *railLibBtn;
+@property (nonatomic, strong) CAShapeLayer *railHomeIcon;
+@property (nonatomic, strong) CAShapeLayer *railDownIcon;
+@property (nonatomic, strong) CAShapeLayer *railLibIcon;
+@property (nonatomic, strong) UILabel *railBadge;
+@property (nonatomic, strong) UIView *railLibDot;
+@property (nonatomic, strong) UIView *railHandle;
+@property (nonatomic, strong) CAShapeLayer *railHandleIcon;
+@property (nonatomic, strong) UIView *fab;
+@property (nonatomic, strong) CAShapeLayer *fabIcon;
+@property (nonatomic, strong) UIView *fabDot;
+@property (nonatomic, assign) BOOL railHidden;
+@property (nonatomic, copy) NSString *railScreen;   // 'browse' | 'down' | 'lib'
+@property (nonatomic, assign) NSInteger railDlActive;
+@property (nonatomic, assign) BOOL railDlFailed;
+@property (nonatomic, assign) BOOL railLibNew;
+@property (nonatomic, assign) BOOL railDlDot;
+// FAB drag state: base position (right:20, bottom:200) + current Y offset.
+@property (nonatomic, assign) CGPoint fabBaseCenter;
+@property (nonatomic, assign) CGFloat fabOffsetY;
+@property (nonatomic, assign) CGPoint fabDragOrigin;
+@property (nonatomic, assign) BOOL fabMoved;
+- (void)setupRailAndFab;
+- (void)hideRail;
+- (void)showRail;
+- (void)bringRailToFront;
+- (void)applyRailState:(NSDictionary *)payload;
+- (void)refreshRailChrome;
++ (UIBezierPath *)globeIconPath;
++ (UIBezierPath *)railDownloadIconPath;
++ (UIBezierPath *)libraryIconPath;
++ (UIBezierPath *)fabDownloadIconPath;
++ (UIBezierPath *)chevronIconPath;
 @end
 
 @implementation BrowserViewController
@@ -86,6 +132,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
 
     [self setupBrowsingTab];
     [self setupChrome];
+    [self setupRailAndFab];
 }
 
 #pragma mark - Setup
@@ -125,6 +172,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     WKWebView *web = [[WKWebView alloc] initWithFrame:self.view.bounds
                                         configuration:[self browsingConfiguration]];
     web.navigationDelegate = self;
+    web.customUserAgent = kSafariDesktopUA;
     web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:web];
     [self.tabs addObject:web];
@@ -167,6 +215,374 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     [_chrome.configuration.userContentController removeScriptMessageHandlerForName:kVDHandler];
 }
 
+#pragma mark - Native rail + magnet FAB (Expo-harness parity)
+
+static UIColor *VDHexRGB(unsigned hex) {
+    return [UIColor colorWithRed:((hex >> 16) & 0xff) / 255.0
+                           green:((hex >> 8) & 0xff) / 255.0
+                            blue:(hex & 0xff) / 255.0
+                           alpha:1.0];
+}
+static UIColor *VDHexRGBA(unsigned hex, CGFloat a) {
+    return [UIColor colorWithRed:((hex >> 16) & 0xff) / 255.0
+                           green:((hex >> 8) & 0xff) / 255.0
+                            blue:(hex & 0xff) / 255.0
+                           alpha:a];
+}
+
+// Icon paths in the 24-unit SVG viewBox (same `d` strings as the Expo shell).
++ (UIBezierPath *)globeIconPath {
+    UIBezierPath *p = [UIBezierPath bezierPathWithOvalInRect:CGRectMake(3, 3, 18, 18)];
+    [p moveToPoint:CGPointMake(3, 12)];
+    [p addLineToPoint:CGPointMake(21, 12)];
+    [p moveToPoint:CGPointMake(12, 3)];
+    [p addCurveToPoint:CGPointMake(12, 21) controlPoint1:CGPointMake(15, 6) controlPoint2:CGPointMake(15, 18)];
+    [p moveToPoint:CGPointMake(12, 3)];
+    [p addCurveToPoint:CGPointMake(12, 21) controlPoint1:CGPointMake(9, 6) controlPoint2:CGPointMake(9, 18)];
+    return p;
+}
++ (UIBezierPath *)railDownloadIconPath {
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    [p moveToPoint:CGPointMake(12, 4)];
+    [p addLineToPoint:CGPointMake(12, 16)];
+    [p moveToPoint:CGPointMake(12, 16)];
+    [p addLineToPoint:CGPointMake(7, 11)];
+    [p moveToPoint:CGPointMake(12, 16)];
+    [p addLineToPoint:CGPointMake(17, 11)];
+    [p moveToPoint:CGPointMake(5, 20)];
+    [p addLineToPoint:CGPointMake(19, 20)];
+    return p;
+}
++ (UIBezierPath *)libraryIconPath {
+    UIBezierPath *p = [UIBezierPath bezierPathWithRoundedRect:CGRectMake(3, 5, 18, 14) cornerRadius:3];
+    UIBezierPath *tri = [UIBezierPath bezierPath];
+    [tri moveToPoint:CGPointMake(10, 9.5)];
+    [tri addLineToPoint:CGPointMake(10, 14.5)];
+    [tri addLineToPoint:CGPointMake(14.5, 12)];
+    [tri closePath];
+    [p appendPath:tri];
+    return p;
+}
++ (UIBezierPath *)fabDownloadIconPath {
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    [p moveToPoint:CGPointMake(12, 3)];
+    [p addLineToPoint:CGPointMake(12, 15)];
+    [p moveToPoint:CGPointMake(7, 10)];
+    [p addLineToPoint:CGPointMake(12, 15)];
+    [p addLineToPoint:CGPointMake(17, 10)];
+    UIBezierPath *tray = [UIBezierPath bezierPath];
+    [tray moveToPoint:CGPointMake(4, 16.5)];
+    [tray addLineToPoint:CGPointMake(4, 19)];
+    [tray addArcWithCenter:CGPointMake(6, 19) radius:2 startAngle:M_PI endAngle:M_PI / 2 clockwise:NO];
+    [tray addLineToPoint:CGPointMake(18, 21)];
+    [tray addArcWithCenter:CGPointMake(18, 19) radius:2 startAngle:M_PI / 2 endAngle:0 clockwise:NO];
+    [tray addLineToPoint:CGPointMake(20, 16.5)];
+    [p appendPath:tray];
+    return p;
+}
++ (UIBezierPath *)chevronIconPath {
+    UIBezierPath *p = [UIBezierPath bezierPath];
+    [p moveToPoint:CGPointMake(9, 6)];
+    [p addLineToPoint:CGPointMake(15, 12)];
+    [p addLineToPoint:CGPointMake(9, 18)];
+    return p;
+}
+
+/** Stroke-only CAShapeLayer for one icon, scaled from the 24 viewBox to `size`. */
+- (CAShapeLayer *)makeIconLayer:(UIBezierPath *)path24
+                            size:(CGFloat)size
+                      strokeWidth:(CGFloat)sw
+                           color:(UIColor *)color {
+    CGFloat s = size / 24.0;
+    UIBezierPath *scaled = [path24 copy];
+    [scaled applyTransform:CGAffineTransformMakeScale(s, s)];
+    CAShapeLayer *layer = [CAShapeLayer layer];
+    layer.frame = CGRectMake(0, 0, size, size);
+    layer.path = scaled.CGPath;
+    layer.strokeColor = color.CGColor;
+    layer.fillColor = UIColor.clearColor.CGColor;
+    layer.lineWidth = sw;
+    layer.lineCap = kCALineCapRound;
+    layer.lineJoin = kCALineJoinRound;
+    layer.contentsScale = UIScreen.mainScreen.scale;
+    return layer;
+}
+
+/** 56x56 omnicolor chip: translucent dark card + hairline border + shadow. */
+- (UIView *)makeChipWithTag:(NSInteger)tag {
+    UIView *chip = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 56, 56)];
+    chip.layer.cornerRadius = 18;
+    chip.layer.shadowColor = UIColor.blackColor.CGColor;
+    chip.layer.shadowOpacity = 0.8;
+    chip.layer.shadowRadius = 3;
+    chip.layer.shadowOffset = CGSizeMake(0, 2);
+    chip.userInteractionEnabled = YES;
+    chip.tag = tag;
+    UITapGestureRecognizer *tap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(railChipTapped:)];
+    [chip addGestureRecognizer:tap];
+    return chip;
+}
+
+- (void)applyChip:(UIView *)chip icon:(CAShapeLayer *)icon active:(BOOL)active {
+    chip.backgroundColor = active ? VDHexRGB(0x3a2f78) : VDHexRGBA(0x161822, 0.78);
+    chip.layer.borderColor = (active ? VDHexRGBA(0xb7a6ff, 0.5) : VDHexRGBA(0xffffff, 0.14)).CGColor;
+    icon.strokeColor = (active ? VDHexRGB(0xd7ccff) : VDHexRGB(0xc9cfdb)).CGColor;
+}
+
+- (void)setupRailAndFab {
+    self.railScreen = @"browse";
+
+    self.rail = [[UIView alloc] initWithFrame:CGRectZero];
+    self.rail.backgroundColor = UIColor.clearColor;
+
+    self.railHomeBtn = [self makeChipWithTag:0];
+    self.railHomeIcon = [self makeIconLayer:[BrowserViewController globeIconPath]
+                                       size:26 strokeWidth:1.8 color:VDHexRGB(0xc9cfdb)];
+    self.railHomeIcon.frame = CGRectMake(15, 15, 26, 26);
+    [self.railHomeBtn.layer addSublayer:self.railHomeIcon];
+
+    self.railDownBtn = [self makeChipWithTag:1];
+    self.railDownIcon = [self makeIconLayer:[BrowserViewController railDownloadIconPath]
+                                       size:26 strokeWidth:1.8 color:VDHexRGB(0xc9cfdb)];
+    self.railDownIcon.frame = CGRectMake(15, 15, 26, 26);
+    [self.railDownBtn.layer addSublayer:self.railDownIcon];
+    self.railBadge = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.railBadge.font = [UIFont boldSystemFontOfSize:12];
+    self.railBadge.textColor = VDHexRGB(0x06130d);
+    self.railBadge.textAlignment = NSTextAlignmentCenter;
+    self.railBadge.layer.cornerRadius = 10;
+    self.railBadge.layer.masksToBounds = YES;
+    self.railBadge.hidden = YES;
+    [self.railDownBtn addSubview:self.railBadge];
+
+    self.railLibBtn = [self makeChipWithTag:2];
+    self.railLibIcon = [self makeIconLayer:[BrowserViewController libraryIconPath]
+                                     size:26 strokeWidth:1.8 color:VDHexRGB(0xc9cfdb)];
+    self.railLibIcon.frame = CGRectMake(15, 15, 26, 26);
+    [self.railLibBtn.layer addSublayer:self.railLibIcon];
+    self.railLibDot = [[UIView alloc] initWithFrame:CGRectMake(38, 8, 10, 10)];
+    self.railLibDot.layer.cornerRadius = 5;
+    self.railLibDot.backgroundColor = VDHexRGB(0x7c5cff);
+    self.railLibDot.hidden = YES;
+    [self.railLibBtn addSubview:self.railLibDot];
+
+    [self.rail addSubview:self.railHomeBtn];
+    [self.rail addSubview:self.railDownBtn];
+    [self.rail addSubview:self.railLibBtn];
+    [self.view addSubview:self.rail];
+
+    // `>` restore handle — visible (and tappable) only while the rail is tucked.
+    self.railHandle = [[UIView alloc] initWithFrame:CGRectZero];
+    self.railHandle.backgroundColor = VDHexRGBA(0x161822, 0.82);
+    self.railHandle.layer.cornerRadius = 16;
+    self.railHandle.layer.maskedCorners = kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
+    self.railHandle.layer.borderColor = VDHexRGBA(0xffffff, 0.14).CGColor;
+    self.railHandle.layer.borderWidth = 1;
+    self.railHandle.layer.shadowColor = UIColor.blackColor.CGColor;
+    self.railHandle.layer.shadowOpacity = 0.8;
+    self.railHandle.layer.shadowRadius = 3;
+    self.railHandle.layer.shadowOffset = CGSizeMake(2, 2);
+    self.railHandleIcon = [self makeIconLayer:[BrowserViewController chevronIconPath]
+                                         size:18 strokeWidth:2.4 color:VDHexRGB(0xe8eaf0)];
+    self.railHandleIcon.frame = CGRectMake(6, 27, 18, 18);
+    [self.railHandle.layer addSublayer:self.railHandleIcon];
+    self.railHandle.alpha = 0;
+    self.railHandle.userInteractionEnabled = NO;
+    self.railHandle.hidden = YES;
+    UITapGestureRecognizer *handleTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(showRail)];
+    [self.railHandle addGestureRecognizer:handleTap];
+    [self.view addSubview:self.railHandle];
+
+    // Magnet FAB — 70x70 card, draggable vertically, X snaps back to the edge.
+    self.fab = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 70, 70)];
+    self.fab.userInteractionEnabled = YES;
+    self.fab.layer.cornerRadius = 20;
+    self.fab.backgroundColor = VDHexRGB(0x6c47eb);
+    self.fab.layer.borderColor = VDHexRGBA(0xffffff, 0.22).CGColor;
+    self.fab.layer.borderWidth = 1;
+    self.fab.layer.shadowColor = VDHexRGB(0x7c5cff).CGColor;
+    self.fab.layer.shadowOpacity = 0.45;
+    self.fab.layer.shadowRadius = 12;
+    self.fab.layer.shadowOffset = CGSizeMake(0, 8);
+    self.fabIcon = [self makeIconLayer:[BrowserViewController fabDownloadIconPath]
+                                  size:30 strokeWidth:2.2 color:UIColor.whiteColor];
+    self.fabIcon.frame = CGRectMake(20, 20, 30, 30);
+    [self.fab.layer addSublayer:self.fabIcon];
+    self.fabDot = [[UIView alloc] initWithFrame:CGRectMake(60, -2, 12, 12)];
+    self.fabDot.layer.cornerRadius = 6;
+    self.fabDot.layer.borderColor = VDHexRGB(0x0e0f14).CGColor;
+    self.fabDot.layer.borderWidth = 2;
+    self.fabDot.backgroundColor = VDHexRGB(0x34d399);
+    self.fabDot.hidden = YES;
+    [self.fab addSubview:self.fabDot];
+    UIPanGestureRecognizer *fabPan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(fabPanned:)];
+    [self.fab addGestureRecognizer:fabPan];
+    // A pan recognizer never fires on a stationary touch (it stays `possible`
+    // until movement, then fails on touch-up) — the tap needs its own recognizer.
+    UITapGestureRecognizer *fabTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(fabTapped)];
+    [self.fab addGestureRecognizer:fabTap];
+    [self.view addSubview:self.fab];
+
+    [self refreshRailChrome];
+    [self.view setNeedsLayout];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGFloat w = self.view.bounds.size.width;
+    CGFloat h = self.view.bounds.size.height;
+    if (self.rail) {
+        CGFloat colH = 56 * 3 + 14 * 2;   // three chips, 14pt gap
+        // bounds+center, not frame — the rail carries a hide transform.
+        self.rail.bounds = CGRectMake(0, 0, 56, colH);
+        self.rail.center = CGPointMake(20 + 28, floor((h - colH) / 2) + colH / 2);
+        self.railHomeBtn.frame = CGRectMake(0, 0, 56, 56);
+        self.railDownBtn.frame = CGRectMake(0, 70, 56, 56);
+        self.railLibBtn.frame = CGRectMake(0, 140, 56, 56);
+    }
+    if (self.railHandle) {
+        self.railHandle.frame = CGRectMake(0, floor((h - 72) / 2), 30, 72);
+    }
+    if (self.fab) {
+        self.fabBaseCenter = CGPointMake(w - 20 - 35, h - 200 - 35);
+        CGFloat minY = 47;          // 12pt margin + half button
+        CGFloat maxY = h - 47;
+        CGFloat y = self.fabBaseCenter.y + self.fabOffsetY;
+        if (y < minY) y = minY;
+        if (y > maxY) y = maxY;
+        self.fabOffsetY = y - self.fabBaseCenter.y;
+        self.fab.center = CGPointMake(self.fabBaseCenter.x, y);
+    }
+}
+
+- (void)railChipTapped:(UITapGestureRecognizer *)gesture {
+    NSInteger tag = gesture.view.tag;
+    NSString *item = tag == 0 ? @"home" : (tag == 1 ? @"down" : @"lib");
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"rail",
+        @"payload": @{ @"item": item },
+    }];
+}
+
+- (void)hideRail {
+    if (self.railHidden || !self.rail) return;
+    self.railHidden = YES;
+    [UIView animateWithDuration:0.26
+                          delay:0
+                        options:UIViewAnimationOptionCurveEaseIn | UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        self.rail.transform = CGAffineTransformMakeTranslation(-90, 0);
+        self.railHandle.alpha = 1;
+        self.railHandle.hidden = NO;
+        self.railHandle.userInteractionEnabled = YES;
+    } completion:nil];
+}
+
+- (void)showRail {
+    if (!self.railHidden || !self.rail) return;
+    self.railHidden = NO;
+    [UIView animateWithDuration:0.45
+                          delay:0
+         usingSpringWithDamping:0.75
+          initialSpringVelocity:0.3
+                        options:UIViewAnimationOptionAllowUserInteraction
+                     animations:^{
+        self.rail.transform = CGAffineTransformIdentity;
+        self.railHandle.alpha = 0;
+        self.railHandle.userInteractionEnabled = NO;
+    } completion:^(BOOL finished) {
+        // Interrupted by a re-tuck — leave the handle visible for that state.
+        if (!self.railHidden) self.railHandle.hidden = YES;
+    }];
+}
+
+/** The pane container is brought to front on every browserPane message — the
+ *  rail/handle/FAB must stay above it. */
+- (void)bringRailToFront {
+    if (self.rail) [self.view bringSubviewToFront:self.rail];
+    if (self.railHandle) [self.view bringSubviewToFront:self.railHandle];
+    if (self.fab) [self.view bringSubviewToFront:self.fab];
+}
+
+/** Rail state pushed by the web UI (`sendNativeAction('rail', ...)`). */
+- (void)applyRailState:(NSDictionary *)payload {
+    if ([payload[@"screen"] isKindOfClass:NSString.class]) self.railScreen = payload[@"screen"];
+    if ([payload[@"dlActive"] isKindOfClass:NSNumber.class]) self.railDlActive = [payload[@"dlActive"] integerValue];
+    if ([payload[@"dlFailed"] isKindOfClass:NSNumber.class]) self.railDlFailed = [payload[@"dlFailed"] boolValue];
+    if ([payload[@"libNew"] isKindOfClass:NSNumber.class]) self.railLibNew = [payload[@"libNew"] boolValue];
+    if ([payload[@"dlDot"] isKindOfClass:NSNumber.class]) self.railDlDot = [payload[@"dlDot"] boolValue];
+    [self refreshRailChrome];
+}
+
+- (void)refreshRailChrome {
+    if (!self.rail) return;
+    [self applyChip:self.railHomeBtn icon:self.railHomeIcon active:[self.railScreen isEqualToString:@"browse"]];
+    [self applyChip:self.railDownBtn icon:self.railDownIcon active:[self.railScreen isEqualToString:@"down"]];
+    [self applyChip:self.railLibBtn icon:self.railLibIcon active:[self.railScreen isEqualToString:@"lib"]];
+    self.railBadge.hidden = self.railDlActive <= 0;
+    if (self.railDlActive > 0) {
+        self.railBadge.text = [@(self.railDlActive) stringValue];
+        self.railBadge.backgroundColor = self.railDlFailed ? VDHexRGB(0xff7a9c) : VDHexRGB(0x3ecf8e);
+        [self.railBadge sizeToFit];
+        CGRect f = self.railBadge.frame;
+        CGFloat bw = MAX(20, ceil(f.size.width) + 8);
+        self.railBadge.frame = CGRectMake(56 - bw, 0, bw, 20);
+    }
+    self.railLibDot.hidden = !self.railLibNew;
+    self.fabDot.hidden = !self.railDlDot;
+}
+
+/** Magnet drag: free Y (clamped 12pt from the edges), X springs back on
+ *  release; a still tap forwards `download` like the Expo FAB. */
+- (void)fabPanned:(UIPanGestureRecognizer *)g {
+    switch (g.state) {
+        case UIGestureRecognizerStateBegan: {
+            self.fabDragOrigin = self.fab.center;
+            self.fabMoved = NO;
+            break;
+        }
+        case UIGestureRecognizerStateChanged: {
+            CGPoint t = [g translationInView:self.view];
+            if (fabs(t.x) > 4 || fabs(t.y) > 4) self.fabMoved = YES;
+            CGFloat minY = 47;
+            CGFloat maxY = self.view.bounds.size.height - 47;
+            CGFloat y = self.fabDragOrigin.y + t.y;
+            if (y < minY) y = minY;
+            if (y > maxY) y = maxY;
+            self.fab.center = CGPointMake(self.fabDragOrigin.x + t.x, y);
+            break;
+        }
+        case UIGestureRecognizerStateEnded:
+        case UIGestureRecognizerStateCancelled: {
+            self.fabOffsetY = self.fab.center.y - self.fabBaseCenter.y;
+            [UIView animateWithDuration:0.45
+                                  delay:0
+                 usingSpringWithDamping:0.72
+                  initialSpringVelocity:0.4
+                                options:UIViewAnimationOptionAllowUserInteraction
+                             animations:^{
+                self.fab.center = CGPointMake(self.fabBaseCenter.x, self.fab.center.y);
+            } completion:nil];
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+- (void)fabTapped {
+    [self sendToChrome:@{
+        @"source": @"vd-native",
+        @"type": @"rail",
+        @"payload": @{ @"item": @"download" },
+    }];
+}
+
 #pragma mark - Tabs (Q016, Q046)
 
 - (WKWebView *)activeTab {
@@ -195,6 +611,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     WKWebView *web = [[WKWebView alloc] initWithFrame:self.view.bounds
                                         configuration:[self browsingConfiguration]];
     web.navigationDelegate = self;
+    web.customUserAgent = kSafariDesktopUA;
     web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view insertSubview:web belowSubview:self.chrome];
     [self.tabs addObject:web];
@@ -336,6 +753,7 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
         [self resetPaneForWebView:web];
         if (web.superview) [self.view insertSubview:web belowSubview:self.chrome];
         web.frame = self.view.bounds;
+        [self showRail];   // pane gone (home) — the rail returns
         return;
     }
 
@@ -375,6 +793,8 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     web.frame = CGRectMake(fx - x.doubleValue, fy - y.doubleValue, fw, fh);
     [self.view bringSubviewToFront:self.paneContainer]; // over the chrome, clipped to the rect
     [self setPaneVisible:visible onView:self.paneContainer animated:YES];
+    [self bringRailToFront];   // overlays always above the pane
+    if (!visible) [self showRail];   // pane leaving (home sweep) — rail returns
 }
 
 #pragma mark - Page-load relay (drives the UI's load -> done gate)
@@ -456,6 +876,27 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
     [self relayPageLoadState:@"error"
                          url:webView.URL.absoluteString
                      message:error.localizedDescription];
+}
+
+/** m.youtube.com serves the mobile site (sticky mini-player and all) no
+ *  matter the UA — rewrite top-level loads to www, like the Expo shell. */
+- (void)webView:(WKWebView *)webView
+    decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    if (navigationAction.targetFrame.isMainFrame) {
+        NSURL *url = navigationAction.request.URL;
+        if ([url.host.lowercaseString isEqualToString:@"m.youtube.com"]) {
+            NSURLComponents *comps = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
+            comps.host = @"www.youtube.com";
+            NSURL *fixed = comps.URL;
+            if (fixed) {
+                [webView loadRequest:[NSURLRequest requestWithURL:fixed]];
+                decisionHandler(WKNavigationActionPolicyCancel);
+                return;
+            }
+        }
+    }
+    decisionHandler(WKNavigationActionPolicyAllow);
 }
 
 #pragma mark - Storage & Downloads (Q013, Q020, Q031, Q042, Q070)
@@ -831,6 +1272,15 @@ static NSString *const kBackgroundSessionID = @"com.maurinex.videodownloader.bg"
         if (message.webView == [self activeTab]) {
             [self sendToChrome:@{ @"source": @"vd-native", @"type": @"pullRefresh", @"payload": @{} }];
         }
+    } else if ([type isEqualToString:@"interact"]) {
+        // Touch inside the active page tucks the native nav rail (throttled
+        // in Sniffer.js); the > handle slides it back out.
+        if (message.webView == [self activeTab]) {
+            [self hideRail];
+        }
+    } else if ([type isEqualToString:@"rail"]) {
+        // Rail state push from the chrome (screen + badges).
+        [self applyRailState:payload];
     } else if ([type isEqualToString:@"browserPane"]) {
         [self applyBrowserPane:payload];
     } else if ([type isEqualToString:@"newTab"]) {

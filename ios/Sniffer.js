@@ -69,4 +69,19 @@
   document.addEventListener('play', schedule, true);
   window.addEventListener('load', schedule);
   schedule();
+
+  // Any touch inside the page tucks the native nav rail (throttled; the
+  // > handle slides it back out). Same contract as the Expo shell.
+  var lastInteract = 0;
+  function interactPing() {
+    var now = Date.now();
+    if (now - lastInteract < 400) return;
+    lastInteract = now;
+    try {
+      window.webkit.messageHandlers.vd.postMessage({ type: 'interact' });
+    } catch (e) {}
+  }
+  ['touchstart', 'mousedown', 'wheel'].forEach(function (ev) {
+    window.addEventListener(ev, interactPing, { passive: true, capture: true });
+  });
 })();
