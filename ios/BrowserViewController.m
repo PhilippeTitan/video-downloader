@@ -1269,9 +1269,27 @@ static UIColor *VDHexRGBA(unsigned hex, CGFloat a) {
 
     if ([type isEqualToString:@"navigate"]) {
         NSString *url = payload[@"url"];
-        if (url.length) {
+        if ([url isKindOfClass:NSString.class] && url.length) {
             NSURL *parsed = [NSURL URLWithString:url];
-            if (parsed) [[self activeTab] loadRequest:[NSURLRequest requestWithURL:parsed]];
+            if (!parsed) {
+                // NSURL rejects raw spaces / non-ASCII — percent-encode the
+                // illegal bytes (leaving the RFC3986 set intact) and retry,
+                // so a sloppy URL never turns into a silently dropped search.
+                static NSCharacterSet *urlLegal;
+                static dispatch_once_t urlOnce;
+                dispatch_once(&urlOnce, ^{
+                    urlLegal = [NSCharacterSet characterSetWithCharactersInString:
+                        @"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+                        @"-._~:/?#[]@!$&'()*+,;=%"];
+                });
+                NSString *encoded = [url stringByAddingPercentEncodingWithAllowedCharacters:urlLegal];
+                parsed = encoded ? [NSURL URLWithString:encoded] : nil;
+            }
+            if (parsed) {
+                [[self activeTab] loadRequest:[NSURLRequest requestWithURL:parsed]];
+            } else {
+                NSLog(@"[vd] navigate dropped (unparseable URL): %@", url);
+            }
         }
     } else if ([type isEqualToString:@"back"] || [type isEqualToString:@"goBack"]) {
         [[self activeTab] goBack];

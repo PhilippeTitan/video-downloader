@@ -162,7 +162,6 @@ interface AppState {
   scale: number
   vw: number
   vh: number
-  rt?: number
   detectedVideo: DetectedVideo | null
   webviewSrc: string
   webviewUrl: string
@@ -275,7 +274,6 @@ function resolveWebTarget(text: string): { src: string; url: string; domain: str
 
 export default class App extends React.Component<{}, AppState> {
   t: any = null
-  rtick: any = null
   tick: any = null
   dr: Record<string, boolean> = {}
   act: Record<string, number> = {}
@@ -662,9 +660,9 @@ export default class App extends React.Component<{}, AppState> {
   executeSearch = (text: string) => {
     const query = (text || '').trim()
     if (!query) return
-    // Mockup parity: typed searches only start from rest or a settled page —
-    // never while a sequence (incl. the home sweep) is already running.
-    if (this.state.seq && this.state.seq.phase !== 'done') return
+    // A running sequence (incl. the home sweep) never eats typed input — a
+    // new commit simply aborts it and restarts (browser behavior: Enter is
+    // never ignored).
     // The query commits now — a later blur must revert to THIS value, not to
     // whatever the box held when it was focused.
     this.qOrig = query
@@ -678,7 +676,11 @@ export default class App extends React.Component<{}, AppState> {
     const updatedTabs = this.tabTextPatch(this.state.tabs, this.state.ci, query)
 
     const nextHist = [query, ...this.state.hist.filter((h) => h !== query)].slice(0, 8)
-    const isAlreadyUp = this.state.seq?.phase === 'done' || (!!this.state.webviewSrc && !this.state.seq)
+    const seqPhase = this.state.seq?.phase
+    const isAlreadyUp =
+      seqPhase === 'done' ||
+      (seqPhase === 'load' && !!this.state.seq?.keepUp) ||
+      (!!this.state.webviewSrc && !this.state.seq)
     const initialPhase = isAlreadyUp ? 'load' : 'fade'
 
     const patch: Record<string, unknown> = {
@@ -692,8 +694,14 @@ export default class App extends React.Component<{}, AppState> {
     }
     // Re-search from a live page skips `scan`, so resolve the target here —
     // the scan->load hook only runs on the full fade->scan->load path.
+    let navTarget: string | null = null
     if (isAlreadyUp) {
       const target = resolveWebTarget(query)
+      navTarget = target.src
+      // The navigation is sent EXPLICITLY from the setState callback below;
+      // componentDidUpdate's webviewSrc-change detection alone silently skips
+      // a repeat query (same URL) or a stale webviewSrc (after in-page taps).
+      this.suppressNav = true
       patch.webviewSrc = target.src
       patch.webviewUrl = target.url
       patch.tabs = updatedTabs.map((t, idx) =>
@@ -705,6 +713,7 @@ export default class App extends React.Component<{}, AppState> {
     this.setState(patch as any, () => {
       this.saveStorage()
       this.handleVideoDetected(query)
+      if (navTarget && hasNativeShell()) requestNavigation(navTarget)
     })
   }
 
@@ -993,11 +1002,6 @@ export default class App extends React.Component<{}, AppState> {
       })
       this.setState({ jobs: updated })
     }, 500)
-
-    this.rtick = setInterval(() => {
-      const q = this.state.seq
-      if (q && (q.phase === 'load' || q.phase === 'done')) this.setState({ rt: Date.now() })
-    }, 16)
 
     this.unsubNav = onNavState((e) => {
       // Per-tab page URL (source of truth for tab.url) + active-tab chrome.
@@ -1340,7 +1344,6 @@ export default class App extends React.Component<{}, AppState> {
     if (this.unsubNav) this.unsubNav()
     clearInterval(this.t)
     clearInterval(this.tick)
-    clearInterval(this.rtick)
     window.removeEventListener('resize', this.handleResize)
     window.removeEventListener('orientationchange', this.handleResize)
     window.removeEventListener('message', this.handleMessage)
