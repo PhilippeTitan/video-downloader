@@ -1097,8 +1097,9 @@ export default class App extends React.Component<{}, AppState> {
               this.pushTabHistory(curTab.id, txt)
             }
             this.handleVideoDetected(txt)
-            this.pageLoaded = false
-            this.loadStartedAt = Date.now()
+            // pageLoaded / loadStartedAt were set at Enter (executeSearch) and
+            // must survive the fade: a page that finishes loading during it
+            // would otherwise be forgotten and wait out the whole timeout.
             up.seq = { ...s.seq, phase: 'scan' }
             up.sp = 0
           }
