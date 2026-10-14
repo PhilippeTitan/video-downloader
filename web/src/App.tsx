@@ -1,5 +1,5 @@
 import React from 'react'
-import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, requestReload, onNavState, requestNavigation, requestSyncTabs, debugLog, sendNativeAction } from './bridge'
+import { hasNativeShell, requestGoBack, requestGoForward, requestBrowserPane, requestReload, onNavState, onPageLoad, requestNavigation, requestSyncTabs, debugLog, sendNativeAction } from './bridge'
 import type { BrowserPaneRect } from './bridge'
 
 interface FavItem {
@@ -300,6 +300,9 @@ export default class App extends React.Component<{}, AppState> {
   privNext = false
   tabHistories: Record<number, { stack: string[]; index: number }> = {}
   unsubNav: (() => void) | null = null
+  unsubPageLoad: (() => void) | null = null
+  pageLoaded = false
+  loadStartedAt = 0
   browserSlotRef = React.createRef<HTMLDivElement>()
   favStripRef = React.createRef<HTMLDivElement>()
   recStripRef = React.createRef<HTMLDivElement>()
@@ -1003,6 +1006,15 @@ export default class App extends React.Component<{}, AppState> {
       this.setState({ jobs: updated })
     }, 500)
 
+    this.unsubPageLoad = onPageLoad((e) => {
+      if (e.tabIndex !== this.state.ci || (e.state !== 'end' && e.state !== 'error')) return
+      this.pageLoaded = true
+      const seq = this.state.seq
+      if (seq?.phase === 'load' && Date.now() - this.loadStartedAt >= 350 && this.state.sp >= 1) {
+        this.setState({ seq: { ...seq, phase: 'done' }, sp: 0 })
+      }
+    })
+
     this.unsubNav = onNavState((e) => {
       // Per-tab page URL (source of truth for tab.url) + active-tab chrome.
       const tabs = this.state.tabs.map((t, idx) =>
@@ -1084,6 +1096,8 @@ export default class App extends React.Component<{}, AppState> {
               this.pushTabHistory(curTab.id, txt)
             }
             this.handleVideoDetected(txt)
+            this.pageLoaded = false
+            this.loadStartedAt = 0
             up.seq = { ...s.seq, phase: 'scan' }
             up.sp = 0
           }
@@ -1091,13 +1105,22 @@ export default class App extends React.Component<{}, AppState> {
           const p = Math.min(1, s.sp + dt / (s.seq.skip ? 750 : 1200))
           up.sp = p
           if (p === 1) {
+            if (!s.seq.skip) {
+              this.pageLoaded = false
+              this.loadStartedAt = Date.now()
+            }
             up.seq = { ...s.seq, phase: s.seq.skip ? 'done' : 'load', t0: Date.now() }
             up.sp = 0
           }
         } else if (s.seq.phase === 'load') {
           const p = Math.min(1, s.sp + dt / 750)
           up.sp = p
-          if (p === 1) {
+          // Do not reveal a blank pane: wait for native pageLoad.end after a
+          // short minimum, with a bounded fallback for slow or silent pages.
+          const elapsed = Date.now() - this.loadStartedAt
+          const ready = this.pageLoaded && elapsed >= 350
+          const timedOut = elapsed >= 4000
+          if ((ready || timedOut) && p >= 1) {
             up.seq = { ...s.seq, phase: 'done' }
             up.sp = 0
           }
@@ -1341,8 +1364,10 @@ export default class App extends React.Component<{}, AppState> {
     if (this.clearHistTimeout) clearTimeout(this.clearHistTimeout)
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
     if (this.sheetSyncTimer) clearTimeout(this.sheetSyncTimer)
-    if (this.unsubNav) this.unsubNav()
-    clearInterval(this.t)
+  if (this.unsubNav) this.unsubNav()
+  if (this.unsubPageLoad) this.unsubPageLoad()
+  clearInterval(this.t)
+
     clearInterval(this.tick)
     window.removeEventListener('resize', this.handleResize)
     window.removeEventListener('orientationchange', this.handleResize)
