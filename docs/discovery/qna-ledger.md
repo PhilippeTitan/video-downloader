@@ -51,7 +51,7 @@
 | Q026 | Clipboard detection on app open (offer copied link)? | ux, ios | Answered | Yes — auto-read on foreground when clipboard looks like a URL; prefilled bar + lit pill, user confirms. |
 | Q027 | Min iOS version + iPad-only vs iPhone universal | ios, scope | Answered | iOS 16 minimum, iPad-only for v1 (responsive CSS kept for cheap iPhone v2). |
 | Q028 | Login/age-gated videos: allow real login inside shell browser? | browser, engine | Answered | Yes — cookies persist in browsing WebView; extractor piggybacks session. |
-| Q029 | Library/job metadata persistence across restarts | storage, engine | Answered | Persist metadata (localStorage) + native file existence sweep on launch. |
+| Q029 | Library/job metadata persistence across restarts | storage, engine | Answered | Persist metadata (localStorage) + native file existence sweep on launch. **Amended by Q129:** metadata moves to a native JSON file in Library/. |
 | Q030 | App name + icon direction | branding | Answered | Keep "Video Downloader" + existing purple mark; icon hot-swappable via Sideloadly later. |
 | Q031 | In-app storage visibility: private container vs Files-app Documents? | storage, ios | Answered (B) | Fully private container (Library/); NO Files-app visibility, NO UIFileSharingEnabled. Files leave only via per-row share export. Consequence: in-app player required → Q041. |
 | Q032 | Auto-download (skip sheet, one-tap best quality) setting? | ux, engine | Answered | Always confirm for v1; auto-download = v2 settings toggle. |
@@ -74,13 +74,13 @@
 | Q049 | ATS: allow arbitrary http loads for streams? | ios, engine | Answered | NSAllowsArbitraryLoads = true. |
 | Q050 | Acceptance script amendments (player + theme steps)? | scope, qa | Answered | Amended 9-step script locked (adds player, AirDrop export, theme switch, relaunch persistence). |
 | Q051 | Progress visibility while browsing (badge vs floating mini-progress)? | ux, pipeline | Answered | Badge-only v1; floating strip back-pocket. **Amended by Q104:** the badge now sits on the FAB and counts active downloads. |
-| Q052 | Browser history + bookmarks in v1? | ux, browser, scope | Answered | Neither v1; both back-pocket (history should be visited-most ranked when built). |
+| Q052 | Browser history + bookmarks in v1? | ux, browser, scope | Answered | Neither v1; both back-pocket (history should be visited-most ranked when built). **Amended by Q126:** a small recents list ships in v1; full history stays back-pocket. |
 | Q053 | Background audio playback for audio-only files? | ios, ux | Answered | Yes — UIBackgroundModes audio + AVAudioSession. |
 | Q054 | Picture-in-Picture from the in-app player? | ios, ux | Answered | Yes — allowsPictureInPicturePlayback + delegate. |
 | Q055 | Settings contents beyond theme? | ux, settings | Answered | Minimal set: Theme, app version + extractor version (read-only), Clear browsing data. |
 | Q056 | Subtitles in the player v1? | ux, scope | Answered | Legible-track passthrough only; sidecar .srt/.vtt back-pocket. |
 | Q057 | Error message style (friendly vs technical)? | ux, engine | Answered | Friendly + expandable technical details disclosure. |
-| Q058 | Tab overview grid UI in v1? | ux, shell | Answered | Strip + swipe-to-close + long-press close/refresh; grid back-pocket. |
+| Q058 | Tab overview grid UI in v1? | ux, shell | Answered | Strip + swipe-to-close + long-press close/refresh; grid back-pocket. **Amended by Q125:** the tab-switcher overlay and drag-reorder are now v1. |
 | Q059 | Download headers: Referer/UA forwarding for sniffed URLs? | engine, sniff | Answered | Forward pageURL as Referer + Safari UA on every transfer. |
 | Q060 | Hot-fix integrity (pinned repo / hash pinning)? | engine, security | Answered | HTTPS + pinned repo; hash-pinning deferred; hot-fix JS executes in sandboxed cookie-less webview (never logged-in browsing webview). |
 | Q061 | Build pipeline: scripted Theos/WSL vs manual? | build, ops | Answered | Scripted — tools/build.sh: web build → copy dist into Theos bundle [amended by Q118: the build runs on GitHub Actions macos-14, not WSL] → make package → re-sign. |
@@ -109,7 +109,7 @@
 | Q084 | Instagram: login wall for reels/feed? | browser, sites | Answered | Log in once, cookies persist (WKWebsiteDataStore); Q060 sandbox is the guardrail. |
 | Q085 | X/Twitter: video-in-tweet sniffing specifics? | browser, sites | Answered | Universal path (Q047 routing), no special-casing; breakage → Track A hot-fix. |
 | Q086 | Pre-roll ads detected alongside real content — filter or not? | sniff, sites | Answered (+amend) | No sheet-filtering heuristics. AMENDED: bundled WKContentRuleList browser-level ad-blocker YES — generic ad networks/popups/trap buttons blocked; youtube.com/ytimg.com/googlevideo.com whitelisted; rule JSON hot-updatable via Track A; blocks requests only, never bypasses protections (Q082 fence intact). |
-| Q087 | Cookie/consent banners delaying detection? | browser, sites | Answered | Continuous DOM-mutation re-arm formalized (pill appears when video element mounts); no user refresh needed. |
+| Q087 | Cookie/consent banners delaying detection? | browser, sites | Answered | Continuous DOM-mutation re-arm formalized (pill appears when video element mounts); no user refresh needed. **Amended by Q124:** implemented with MutationObserver plus a throttled scan, not a fixed interval. |
 | Q088 | DRM content (Netflix/Disney+/Spotify) — fence? | engine, security | Answered | Never-list line: never attempt FairPlay/Widevine/PlayReady decryption; optional "protected stream" status message later. |
 | Q089 | Source list churn on quality switch / mid-play? | sniff, engine | Answered | Replace-on-change with recency ordering; superseded same-page entries dropped. |
 | Q090 | Free-space check before download start? | storage, engine | Answered | Check + blocking warn ("Not enough space"), 1GB absolute floor, Download-Anyway override. |
@@ -121,7 +121,7 @@
 | Q096 | HLS variant list cap in the source sheet? | ux, engine | Answered | Cap 8, deduped by resolution, height-descending, plus separate audio row. |
 | Q097 | iPad Split View / Slide Over support? | ux, ios | Answered | Supported; opt-out later is one plist line if half-width breaks badly. |
 | Q098 | Downloaded tab default sort order? | ux, storage | Answered | Newest-first, no sort options v1. |
-| Q099 | Hot-fix repo name + conventions? | ops, engine | Answered | Private `video-downloader-extractors`, main-only, payload/ + manifest.json (version, sha256 per file); commit-and-push = live. |
+| Q099 | Hot-fix repo name + conventions? | ops, engine | Answered | Private `video-downloader-extractors`, main-only, payload/ + manifest.json (version, sha256 per file); commit-and-push = live. **Sequencing by Q130:** the repo and loader are created after the engine works; a bundled fallback ships first. |
 | Q100 | Disposition of DeepSeek's current uncommitted scaffold? | repo, process | Answered | Freeze-and-restructure at conclusion: working tree keeps churning until spec approval; first post-freeze commit = monorepo restructure + .gitignore denylist; DeepSeek gets updated paths in handoff note. |
 | Q101 | Where do search results come from in the shipped app? | browser, search, backend | Answered | Browsing WebView goes straight to youtube.com/results. The generated /api/webview-search page and the Archive.org fallback are dropped (dev-only middleware, conflicts with Q001). Amends S004. |
 | Q102 | Purpose of expo-app/? | architecture, build, testing | Answered (resolved by Q111) | Built as the owner's own way to test UI and functionality before bundling an .ipa (Expo Go). The React Native vs Obj-C Theos shell gap limits fidelity. Treated as a dev-only preview, never shipped. A shared bridge contract to stop drift is proposed, resolved in Q111. |
@@ -143,6 +143,16 @@
 | Q118 | Which repo is canonical and how do changes land? | process, repo, ci | Answered | GitLab is canonical. Work lands through MRs the user merges. The push mirror feeds GitHub, whose Actions runs the iOS build (macos-14). Amends Q073 and Q061. |
 | Q119 | Add a root AGENTS.md? | process, repo | Answered | Yes: one root file pointing to the ledger and the never-list, with build and test rules. Not yet written (discovery freeze). |
 | Q120 | Is v1-spec.md approved now? | process | Answered | Mark it approved with an amendments list covering Q101-Q119, and regenerate it at the next checkpoint. Not yet edited: the spec still says PROPOSED. |
+| Q121 | What happens to dev-only files in the repo? | repo, hygiene | Answered | Remove tools/ngrok/ngrok.exe and the .aistudio/ agent notes from the tree; .gitignore gets tools/**/*.exe and .aistudio/. The binary stays in git history; rewriting history is a separate decision. Not yet applied (discovery freeze). |
+| Q122 | What stays of web/server/api.ts? | backend, code, security | Answered | Kept as a dev-only mock, moved under dev/ and excluded from the bundle. Deleted once LocalEngine (Q015) exists. The HTML-injection issues in the generated search page must be fixed or removed with it. |
+| Q123 | How is App.tsx broken up? | code, performance | Answered | Incremental extraction, not a rewrite: animation loop and tab state first, then sheet and bridge. Each step is checked by the Q111 harness. |
+| Q124 | Sniffer scan frequency | sniff, performance | Answered | MutationObserver plus a throttled scan, with a slow safety rescan every few seconds. The fixed 400 ms interval goes. Amends Q087. |
+| Q125 | Tab-switcher overlay vs Q058 | ux, shell, tabs | Answered (+follow-up) | The built tab-switcher overlay and drag-reorder are v1. Follow-up: user wants the animation updated; to be scoped in a later round. Amends Q058. |
+| Q126 | What is the recents list? | ux, browser, privacy | Answered | Last 8 search or URL entries, skips private tabs (Q110), clear button in Settings. First-run seed entries are dropped. Amends Q052. |
+| Q127 | Do pull-to-refresh and the static-frame wipe stay? | ux, animation | Answered | Keep both. The wipe becomes a CSS transform with a reduced-motion fallback. Check its cost on the iPad before any cut. |
+| Q128 | How do failed downloads behave? | pipeline, ux, reliability | Answered | Auto-retry up to 3 times (using Range resume, Q019), then the job stays in Downloads with Retry and Remove and expandable technical details (Q057). |
+| Q129 | Where does library metadata live? | storage, ios | Answered | A native JSON file in Library/. Clear browsing data (Q055) and WebView storage resets can't touch it. Amends Q029. |
+| Q130 | Does the hot-fix repo exist yet? | ops, engine | Answered | Created after the engine works. A bundled extractor fallback ships first. Sequencing note on Q099. |
 
 ---
 
@@ -186,3 +196,4 @@
 - Discovery reopened after the app was built with extra agents (animations, native rail, FAB). The ledger is behind the code; later rounds reconcile it. The code now has a tab-switcher overlay (vs Q058), a recents list (vs Q052), and a native FAB (vs S002). The build runs on GitHub Actions macos-14, not WSL (vs Q061).
 - Checkpoint 11: Round 11 answered (Q101-Q110) | 110/200 | reconciliation round: **search goes straight to YouTube** (Q101), **FAB is the download button** (Q104), **soft animation aesthetic tied to real load** (Q105), **Safari gestures + popup policy** (Q106/Q107), **desktop-class UA + no native-app redirects** (Q108), **sniff everything, download what's supported** (Q109), **private tabs** (Q110). The Q102 follow-up on testing is closed in Q111.
 - Checkpoint 12: Round 12 answered (Q111-Q120) | 120/200 | process and structure locked: **desktop-Chrome mock-bridge test harness + CI** (Q111), **shell owns tabs** (Q112), **native rail owns controls** (Q113), **AVFoundation remux before ffmpeg** (Q114), **soft error card** (Q115), **350/450 ms animation tokens** (Q116), **in-app log console in v1** (Q117), **GitLab canonical, MRs** (Q118), **root AGENTS.md** (Q119), **v1 spec approved with amendments** (Q120).
+- Checkpoint 13: Round 13 answered (Q121-Q130) | 130/200 | code and repo hygiene locked: **remove ngrok.exe and agent notes** (Q121), **api.ts becomes a dev-only mock** (Q122), **incremental App.tsx split** (Q123), **observer-based sniffer** (Q124), **tab switcher is v1** (Q125), **recents list** (Q126), **keep pull-to-refresh and wipe** (Q127), **auto-retry then Retry/Remove** (Q128), **native library metadata** (Q129), **hot-fix repo after engine** (Q130). Open: tab-switcher animation update (Q125 follow-up).
