@@ -730,6 +730,12 @@ export default function App() {
                 onMessage={(e) => handleBrowserMessage(e, tabId)}
                 onNavigationStateChange={(nav) => handleBrowserNav(nav, tabId)}
                 onShouldStartLoadWithRequest={(req) => {
+                  // Deep links (youtube://, vnd.youtube:// …) would be handed
+                  // to the system and yank the user into the native app — an
+                  // in-app browser swallows every non-web scheme.
+                  const sc = /^([a-z][a-z0-9+.-]*):/i.exec(req.url || '');
+                  if (sc && !['http', 'https', 'about', 'blob', 'data'].includes(sc[1].toLowerCase()))
+                    return false;
                   if (req.isTopFrame === false) return true;
                   const fixed = rewriteMobileUrl(req.url);
                   if (fixed && fixed !== tab.url) {

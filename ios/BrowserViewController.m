@@ -879,12 +879,25 @@ static UIColor *VDHexRGBA(unsigned hex, CGFloat a) {
 }
 
 /** m.youtube.com serves the mobile site (sticky mini-player and all) no
- *  matter the UA — rewrite top-level loads to www, like the Expo shell. */
+ *  matter the UA — rewrite top-level loads to www, like the Expo shell.
+ *  Custom schemes (youtube://, vnd.youtube://, itms-apps:// …) are CANCELLED:
+ *  allowing them hands the URL to the system and iOS yanks the user out into
+ *  the native app — an in-app browser must swallow those deep links. */
 - (void)webView:(WKWebView *)webView
     decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
                     decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+    NSURL *url = navigationAction.request.URL;
+    NSString *scheme = url.scheme.lowercaseString;
+    static NSSet<NSString *> *webSchemes;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        webSchemes = [NSSet setWithObjects:@"http", @"https", @"about", @"blob", @"data", nil];
+    });
+    if (scheme.length && ![webSchemes containsObject:scheme]) {
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
     if (navigationAction.targetFrame.isMainFrame) {
-        NSURL *url = navigationAction.request.URL;
         if ([url.host.lowercaseString isEqualToString:@"m.youtube.com"]) {
             NSURLComponents *comps = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
             comps.host = @"www.youtube.com";
