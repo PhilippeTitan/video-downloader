@@ -13,6 +13,10 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
+  "optionalDependencies": {
+    "@rolldown/binding-linux-x64-gnu": "1.2.13",
+    "@oxlint/binding-linux-x64-gnu": "1.87.0"
+  },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
